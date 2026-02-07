@@ -39,3 +39,33 @@ History was rewritten. If you had already pushed to `origin`, you will need to f
 ```bash
 git push --force-with-lease origin main
 ```
+
+---
+
+## 2026-02-07: Extension activation logs (AgenticSuno)
+
+### Context
+User shared Cursor/VS Code extension activation logs, including AgenticSuno startup and Suno API usage.
+
+### Summary of logs
+
+**AgenticSuno activation**
+- Extension activated; PlayerViewProvider, StatusBarManager, MoodClassifier, MusicManager, ActivityMonitor, Legacy TaskFileWatcher registered/started.
+- Two background Suno generations started at activation: one for **focused**, one for **ambient** (mood=ambient, intensity=30).
+- SunoClient called `https://api.sunoapi.org/api/v1/generate` (useMock=false, hasApiKey=true); tasks created and polling started.
+
+**Suno polling**
+- **Focused**: reached `TEXT_SUCCESS` around poll 10–12 (~23–28s); MusicManager then used it (“Generating music - mood=ambient…” and “Waiting for background generation to complete for ambient…”).
+- **Ambient**: remained `PENDING` for many polls (logs show up to poll 40, ~88–98s). One of the two tasks consistently reported TEXT_SUCCESS while the other stayed PENDING (typical for two parallel jobs).
+
+**Player**
+- `PlayerViewProvider: resolveWebviewView` ran; webview logged “Player initialized.”
+
+**Unrelated errors (other extensions/settings)**
+- `repoResult.error UserNotLoggedInError` (likely Git/auth).
+- Cloud Code: 401 Unauthenticated on `listExperiments` (missing Google OAuth).
+- OTLP exporter: “Trace spans collection is not enabled for this user” (400).
+- Node deprecation: `punycode` module deprecated (from dependency, not AgenticSuno).
+
+### Conclusion
+AgenticSuno started correctly; Suno API key is set and at least one background track completed. The long PENDING on the second task is consistent with Suno API latency for one of two parallel generations. No change requested; log summary recorded for reference.
