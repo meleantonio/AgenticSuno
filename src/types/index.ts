@@ -68,6 +68,27 @@ export interface ProjectTheme {
     generatedFrom: string;  // Source (README, package.json, etc.)
 }
 
+// ========== Persisted library (workspaceState) ==========
+
+/** One track stored in the song library for replay across sessions */
+export interface PersistedTrack {
+    id: string;
+    audio_url: string;
+    title?: string;
+    mood?: Mood;
+    generatedAt: number;
+    prompt?: string;
+    style?: string;
+}
+
+/** Project theme (first song) stored in workspaceState */
+export interface StoredProjectTheme {
+    track?: PersistedTrack;
+    prompt: string;
+    style?: string;
+    generatedAt?: number;
+}
+
 // ========== Suno API ==========
 
 export interface SunoGenerateRequest {

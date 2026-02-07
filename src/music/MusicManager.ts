@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
 import { SunoClient, MusicTrack, GenerateResult, GenerationMetrics } from '../suno/SunoClient';
-import { AgentState, Mood, AgentActivity, MusicState, AudioClip } from '../types';
+import { AgentState, Mood, AgentActivity, MusicState, AudioClip, PersistedTrack, StoredProjectTheme } from '../types';
 import { PlayerViewProvider } from '../ui/PlayerViewProvider';
 import { MoodClassifier } from '../classification/MoodClassifier';
+
+const WORKSPACE_STATE_KEY_LIBRARY = 'agenticSuno.library';
+const WORKSPACE_STATE_KEY_PROJECT_THEME = 'agenticSuno.projectTheme';
+const LIBRARY_MAX_TRACKS = 50;
+const PROJECT_THEME_PROMPT_MAX_CHARS = 400;
 
 /**
  * MusicManager - Enhanced orchestrator for music generation and playback.
@@ -35,7 +40,14 @@ export class MusicManager {
     private moodCache: Map<Mood, MusicTrack[]> = new Map();
     private pendingGenerations: Map<Mood, Promise<void>> = new Map();
 
-    constructor(private playerProvider: PlayerViewProvider) {
+    // Persisted library and project theme (per-workspace)
+    private library: PersistedTrack[] = [];
+    private projectTheme: StoredProjectTheme | null = null;
+
+    constructor(
+        private playerProvider: PlayerViewProvider,
+        private workspaceState: vscode.Memento
+    ) {
         this.client = new SunoClient();
         this.classifier = new MoodClassifier();
         console.log('MusicManager: Initialized');
@@ -229,6 +241,7 @@ export class MusicManager {
 
                 if (track) {
                     this.queue.push(track);
+                    this.addToLibrary(track, { prompt, style: this.getPromptForMood(this.currentMood, this.currentIntensity) });
                     this.playNext();
                     this.startExtensionScheduler();
 
@@ -252,6 +265,9 @@ export class MusicManager {
             this.showGenerationMetrics(result.metrics);
 
             if (result.tracks && result.tracks.length > 0) {
+                for (const t of result.tracks) {
+                    this.addToLibrary(t, { prompt: finalPrompt, style: this.getPromptForMood(this.currentMood, this.currentIntensity) });
+                }
                 this.queue.push(...result.tracks);
                 this.playNext();
                 this.startExtensionScheduler();
@@ -349,6 +365,10 @@ export class MusicManager {
             this.showGenerationMetrics(result.metrics);
 
             if (result.tracks && result.tracks.length > 0) {
+                const style = this.getPromptForMood(this.currentMood, this.currentIntensity);
+                for (const t of result.tracks) {
+                    this.addToLibrary(t, { prompt: prompt, style });
+                }
                 this.queue.push(...result.tracks);
             }
         } catch (error) {
@@ -458,5 +478,213 @@ export class MusicManager {
 
     public isCurrentlyPlaying(): boolean {
         return this.isPlaying;
+    }
+
+    // ---------- Persisted library & project theme ----------
+
+    /**
+     * Load library and project theme from workspace state. Call once on activate.
+     */
+    public loadPersistedLibrary(): void {
+        try {
+            const rawLibrary = this.workspaceState.get<PersistedTrack[]>(WORKSPACE_STATE_KEY_LIBRARY);
+            this.library = Array.isArray(rawLibrary) ? rawLibrary : [];
+            const rawTheme = this.workspaceState.get<StoredProjectTheme>(WORKSPACE_STATE_KEY_PROJECT_THEME);
+            this.projectTheme = rawTheme && typeof rawTheme.prompt === 'string' ? rawTheme : null;
+            console.log(`MusicManager: Loaded ${this.library.length} library tracks, projectTheme=${!!this.projectTheme}`);
+            this.playerProvider.setLibrary(this.library);
+            this.playerProvider.setProjectThemeAvailable(!!this.projectTheme);
+        } catch (e) {
+            console.error('MusicManager: loadPersistedLibrary error', e);
+        }
+    }
+
+    public getProjectTheme(): StoredProjectTheme | null {
+        return this.projectTheme;
+    }
+
+    public getLibrary(): PersistedTrack[] {
+        return [...this.library];
+    }
+
+    public setProjectTheme(track: MusicTrack, prompt: string, style?: string): void {
+        const persisted: PersistedTrack = {
+            id: track.id,
+            audio_url: track.audio_url,
+            title: track.title,
+            mood: this.currentMood,
+            generatedAt: Date.now(),
+            prompt,
+            style,
+        };
+        this.projectTheme = { track: persisted, prompt, style, generatedAt: persisted.generatedAt };
+        this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
+        this.playerProvider.setProjectThemeAvailable(true);
+    }
+
+    public addToLibrary(track: MusicTrack, options?: { prompt?: string; style?: string }): void {
+        const persisted: PersistedTrack = {
+            id: track.id,
+            audio_url: track.audio_url,
+            title: track.title,
+            mood: this.currentMood,
+            generatedAt: Date.now(),
+            prompt: options?.prompt,
+            style: options?.style,
+        };
+        this.library.unshift(persisted);
+        if (this.library.length > LIBRARY_MAX_TRACKS) {
+            this.library = this.library.slice(0, LIBRARY_MAX_TRACKS);
+        }
+        this.persistLibrary();
+        this.playerProvider.setLibrary(this.library);
+    }
+
+    private persistLibrary(): void {
+        try {
+            this.workspaceState.update(WORKSPACE_STATE_KEY_LIBRARY, this.library);
+        } catch (e) {
+            console.error('MusicManager: persistLibrary error', e);
+        }
+    }
+
+    /**
+     * Derive a project-theme prompt from repo name, README, spec/, package.json.
+     */
+    public async deriveProjectThemePrompt(): Promise<string | null> {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) return null;
+
+        const parts: string[] = [];
+        const repoName = folder.name;
+        if (repoName) {
+            parts.push(`Instrumental theme for a project named ${repoName}, ambient, modern`);
+        }
+
+        try {
+            const readmeUri = vscode.Uri.joinPath(folder.uri, 'README.md');
+            const readmeData = await Promise.resolve(vscode.workspace.fs.readFile(readmeUri)).catch(() => null);
+            if (readmeData) {
+                const text = Buffer.from(readmeData).toString('utf8')
+                    .replace(/#+/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .substring(0, 300);
+                if (text.length > 20) parts.push(text);
+            }
+        } catch { /* ignore */ }
+
+        const specFiles = ['spec/intent.md', 'spec/requirements.md', 'spec/design.md'];
+        for (const rel of specFiles) {
+            try {
+                const uri = vscode.Uri.joinPath(folder.uri, rel);
+                const data = await Promise.resolve(vscode.workspace.fs.readFile(uri)).catch(() => null);
+                if (data) {
+                    const text = Buffer.from(data).toString('utf8')
+                        .replace(/#+/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .substring(0, 200);
+                    if (text.length > 15) parts.push(text);
+                    break; // one spec file is enough
+                }
+            } catch { /* ignore */ }
+        }
+
+        try {
+            const pkgUri = vscode.Uri.joinPath(folder.uri, 'package.json');
+            const data = await Promise.resolve(vscode.workspace.fs.readFile(pkgUri)).catch(() => null);
+            if (data) {
+                const json = JSON.parse(Buffer.from(data).toString('utf8'));
+                const name = json?.name;
+                const desc = json?.description;
+                if (name) parts.push(`Project: ${name}`);
+                if (desc && typeof desc === 'string') parts.push(desc.substring(0, 120));
+            }
+        } catch { /* ignore */ }
+
+        if (parts.length === 0) return null;
+        const combined = parts.join('. ').substring(0, PROJECT_THEME_PROMPT_MAX_CHARS);
+        return combined + ', instrumental';
+    }
+
+    /**
+     * Ensure project theme exists (lazy). Call when user opens player or first Play. No-op if no workspace or no prompt.
+     */
+    public async ensureProjectTheme(): Promise<void> {
+        if (this.projectTheme?.track) return; // already have a theme track
+        const prompt = this.projectTheme?.prompt ?? await this.deriveProjectThemePrompt();
+        if (!prompt) {
+            console.log('MusicManager: No project theme prompt (no workspace or no content)');
+            return;
+        }
+        try {
+            console.log('MusicManager: Generating project theme...');
+            this.playerProvider.showGenerating(0);
+            const result = await this.client.generate(prompt, true, true);
+            if (result.tracks && result.tracks.length > 0) {
+                const track = result.tracks[0];
+                this.setProjectTheme(track, prompt);
+                this.addToLibrary(track, { prompt });
+                this.playerProvider.setLibrary(this.library);
+            }
+        } catch (e) {
+            console.error('MusicManager: ensureProjectTheme error', e);
+        }
+    }
+
+    /**
+     * Play project theme (stored track or regenerate from prompt). Falls back to starting normal flow if no theme.
+     */
+    public async playProjectTheme(): Promise<void> {
+        if (this.isPlaying) return;
+
+        const theme = this.projectTheme;
+        if (theme?.track?.audio_url) {
+            this.isPlaying = true;
+            this.currentMood = theme.track.mood ?? 'ambient';
+            this.playerProvider.updateState({ mood: this.currentMood });
+            this.playerProvider.playTrack(
+                theme.track.audio_url,
+                theme.track.title ?? 'Project theme',
+                theme.style ?? theme.prompt.substring(0, 50),
+                theme.track.mood
+            );
+            return;
+        }
+        if (theme?.prompt) {
+            await this.ensureProjectTheme();
+            if (this.projectTheme?.track) {
+                await this.playProjectTheme();
+                return;
+            }
+        }
+
+        // No theme: start normal flow (will use mock if no API key)
+        await this.startFlow();
+    }
+
+    /**
+     * Play a track from the library by index.
+     */
+    public playLibraryTrack(index: number): void {
+        const track = this.library[index];
+        if (!track) return;
+        if (this.isPlaying) this.stop();
+        this.isPlaying = true;
+        this.currentMood = track.mood ?? 'ambient';
+        this.currentTrack = {
+            id: track.id,
+            audio_url: track.audio_url,
+            title: track.title,
+            status: 'complete',
+        };
+        this.playerProvider.updateState({ mood: this.currentMood });
+        this.playerProvider.playTrack(
+            track.audio_url,
+            track.title ?? 'Library track',
+            track.style ?? track.prompt?.substring(0, 50) ?? '',
+            track.mood
+        );
     }
 }

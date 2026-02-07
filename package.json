@@ -42,6 +42,10 @@
             {
                 "command": "agenticSuno.showPlayer",
                 "title": "AgenticSuno: Show Player"
+            },
+            {
+                "command": "agenticSuno.playProjectTheme",
+                "title": "AgenticSuno: Play Project Theme"
             }
         ],
         "configuration": {

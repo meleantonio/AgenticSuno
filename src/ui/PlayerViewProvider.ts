@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Mood, MusicStatus, AgentActivity } from '../types';
+import { Mood, MusicStatus, AgentActivity, PersistedTrack } from '../types';
 
 export class PlayerViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'agenticSuno.player';
@@ -45,6 +45,14 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'skip':
                     vscode.commands.executeCommand('agenticSuno.skip');
+                    break;
+                case 'playProjectTheme':
+                    vscode.commands.executeCommand('agenticSuno.playProjectTheme');
+                    break;
+                case 'playLibraryTrack':
+                    if (typeof data.index === 'number') {
+                        vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
+                    }
                     break;
                 case 'mute':
                     // Handle mute state change
@@ -127,6 +135,33 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Update the library list in the player (persisted + session tracks).
+     */
+    public setLibrary(tracks: PersistedTrack[]) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'setLibrary',
+                tracks: tracks.map((t) => ({
+                    id: t.id,
+                    audio_url: t.audio_url,
+                    title: t.title,
+                    mood: t.mood,
+                    generatedAt: t.generatedAt,
+                })),
+            });
+        }
+    }
+
+    /**
+     * Tell the player whether a project theme is available (so it can show "Play project theme").
+     */
+    public setProjectThemeAvailable(available: boolean) {
+        if (this._view) {
+            this._view.webview.postMessage({ type: 'setProjectThemeAvailable', available });
+        }
+    }
+
+    /**
      * Show generation complete with total time
      */
     public showGenerationComplete(totalSeconds: number) {
@@ -147,7 +182,7 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https:;">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https:; connect-src https:;">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link href="${styleUri}" rel="stylesheet">
                 <title>AgenticSuno Player</title>
@@ -201,6 +236,16 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                             </div>
                             <span id="intensity-value">50%</span>
                         </div>
+                    </div>
+                    
+                    <!-- Project theme & Library -->
+                    <div id="library-section" class="glass-card">
+                        <h4>Your tracks</h4>
+                        <button type="button" id="play-project-theme-btn" class="library-btn" style="display: none;">
+                            🎵 Play project theme
+                        </button>
+                        <p id="no-project-theme-hint" class="library-hint">No project theme yet. Start an agent or run "Start Music" to generate.</p>
+                        <div id="library-list" class="library-list"></div>
                     </div>
                     
                     <!-- Activity Feed -->

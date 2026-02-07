@@ -170,3 +170,60 @@ The player webview is now retained when hidden, so closing the sidebar or changi
 
 **7. Edge cases**
 - No workspace: mock only. No API key: mock for theme. URL expiry: offer Regenerate. First launch: lazy project theme on first Play.
+
+### Implementation (2026-02-07)
+
+**Types (`src/types/index.ts`)**
+- Added `PersistedTrack` (id, audio_url, title?, mood?, generatedAt, prompt?, style?) and `StoredProjectTheme` (track?, prompt, style?, generatedAt?).
+
+**MusicManager (`src/music/MusicManager.ts`)**
+- Constructor now takes `playerProvider` and `workspaceState: vscode.Memento`. Uses `agenticSuno.library` and `agenticSuno.projectTheme` keys.
+- `loadPersistedLibrary()`: loads library and project theme from workspaceState; calls `playerProvider.setLibrary()` and `setProjectThemeAvailable()`.
+- `getProjectTheme()`, `getLibrary()`, `setProjectTheme(track, prompt, style?)`, `addToLibrary(track, options?)`, `persistLibrary()` (private). Library capped at 50 tracks.
+- `deriveProjectThemePrompt()`: builds prompt from repo name, README.md (first ~300 chars), spec/intent|requirements|design.md (first ~200), package.json name/description. Returns null if no workspace.
+- `ensureProjectTheme()`: if no theme track, uses existing prompt or derives one, generates via Suno, sets project theme and adds to library.
+- `playProjectTheme()`: plays stored theme track or regenerates from prompt; else falls back to `startFlow()` (mock if no API key).
+- `playLibraryTrack(index)`: plays track from library by index, sets currentTrack for consistent state.
+- After every successful generation (cache hit, live generate, extend): `addToLibrary()` and `persistLibrary()`; player library UI updated.
+
+**Extension (`src/extension.ts`)**
+- MusicManager created with `context.workspaceState`. After create, `loadPersistedLibrary()`.
+- `setTimeout(..., 5000)` to run `ensureProjectTheme()` lazily after activation.
+- Commands: `agenticSuno.playProjectTheme`, `agenticSuno.playLibraryTrack` (with index). Both registered and in package.json (playProjectTheme only in contributes).
+
+**PlayerViewProvider (`src/ui/PlayerViewProvider.ts`)**
+- Handles messages `playProjectTheme` and `playLibraryTrack` (with index) by executing the corresponding commands.
+- `setLibrary(tracks)` and `setProjectThemeAvailable(available)` post message to webview.
+
+**Player UI (`media/player.js`, `PlayerViewProvider` HTML, `media/style.css`)**
+- New section "Your tracks": button "Play project theme" (shown when projectThemeAvailable), hint when no theme, and scrollable library list (up to 20 items). Each item click sends `playLibraryTrack` with index.
+- Messages `setLibrary` and `setProjectThemeAvailable` update local state and re-render button/list.
+
+**Test**
+- `music.test.ts`: mock Memento (get, update, keys) and mock player with setLibrary, setProjectThemeAvailable for MusicManager constructor.
+
+---
+
+## 2026-02-07: Audio playback "no supported source" fix
+
+### Context
+User shared extension logs showing webview audio failures:
+- `Webview Log: Play error: Failed to load because no supported source was found.`
+- `Webview Log: Play error: NotSupportedError: The element has no supported sources.`
+- URLs used: `https://musicfile.removeai.ai/...` (Suno API CDN).
+
+### Cause
+- Remote audio in webview can fail due to: (1) CSP not allowing connect/media from HTTPS, (2) browser not recognizing format when no MIME/type is set, (3) CORS when loading cross-origin media.
+
+### Actions taken
+1. **PlayerViewProvider.ts** – CSP: added `connect-src https:;` so the webview can load remote media over HTTPS (in addition to existing `media-src https:`).
+2. **media/player.js** – `playTrackInternal`:
+   - Set `audioElement.crossOrigin = 'anonymous'` for CORS when loading from CDN.
+   - Use a `<source>` child with `type="audio/mpeg"` (Suno API typically returns MP3) so the browser doesn’t fail on format detection.
+   - Clear with `innerHTML = ''`, append one `<source>`, then `load()` and `play()`.
+3. **media/player.js** – `error` listener: log and post `target.error.code` and message (MEDIA_ERR_ABORTED=1, MEDIA_ERR_NETWORK=2, MEDIA_ERR_DECODE=3, MEDIA_ERR_SRC_NOT_SUPPORTED=4) for easier debugging.
+4. **media/player.js** – `stopPlayback`: clear using `innerHTML = ''`, `removeAttribute('src')`, and `load()` so state matches the new source-based setup.
+
+### Files changed
+- `src/ui/PlayerViewProvider.ts` (CSP)
+- `media/player.js` (playTrackInternal, error handler, stopPlayback)

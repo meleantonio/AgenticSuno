@@ -49,9 +49,10 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push({ dispose: () => statusBarManager?.dispose() });
         log('StatusBarManager created');
 
-        // 3. Setup Music Manager
-        musicManager = new MusicManager(playerProvider);
+        // 3. Setup Music Manager (with workspace state for persisted library)
+        musicManager = new MusicManager(playerProvider, context.workspaceState);
         log('MusicManager created');
+        musicManager.loadPersistedLibrary();
 
         // 4. Setup Activity Monitor
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -118,6 +119,10 @@ export function activate(context: vscode.ExtensionContext) {
 
         // 6. Register Commands
         registerCommands(context, playerProvider);
+        // Lazy project theme (after first paint)
+        setTimeout(() => {
+            musicManager?.ensureProjectTheme().catch((e) => log(`ensureProjectTheme: ${e}`));
+        }, 5000);
 
         log('AgenticSuno activation complete!');
         vscode.window.showInformationMessage('AgenticSuno ready! AI agents will trigger music.');
@@ -202,7 +207,24 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
         await vscode.commands.executeCommand('agenticSuno.player.focus');
     });
 
-    context.subscriptions.push(startCmd, stopCmd, pauseCmd, resumeCmd, toggleCmd, skipCmd, showPlayerCmd);
+    // Play project theme (first song for this repo)
+    const playProjectThemeCmd = vscode.commands.registerCommand('agenticSuno.playProjectTheme', async () => {
+        if (musicManager) {
+            statusBarManager?.setGenerating();
+            await musicManager.playProjectTheme();
+            statusBarManager?.setPlaying(musicManager.getCurrentMood());
+        }
+    });
+
+    // Play a track from the library by index
+    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (_context: unknown, index: number) => {
+        if (musicManager && typeof index === 'number') {
+            musicManager.playLibraryTrack(index);
+            statusBarManager?.setPlaying(musicManager.getCurrentMood());
+        }
+    });
+
+    context.subscriptions.push(startCmd, stopCmd, pauseCmd, resumeCmd, toggleCmd, skipCmd, showPlayerCmd, playProjectThemeCmd, playLibraryTrackCmd);
     log('Commands registered');
 }
 
