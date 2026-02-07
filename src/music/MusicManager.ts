@@ -29,7 +29,7 @@ export class MusicManager {
 
     // Background music cache
     private moodCache: Map<Mood, MusicTrack[]> = new Map();
-    private isCaching: Set<Mood> = new Set();
+    private pendingGenerations: Map<Mood, Promise<void>> = new Map();
 
     constructor(private playerProvider: PlayerViewProvider) {
         this.client = new SunoClient();
@@ -51,31 +51,35 @@ export class MusicManager {
     }
 
     private async generateInBackground(mood: Mood) {
-        if (this.isCaching.has(mood)) return;
+        if (this.pendingGenerations.has(mood)) return;
 
         // Don't cache if we already have tracks
         const cached = this.moodCache.get(mood) || [];
         if (cached.length > 0) return;
 
         console.log(`MusicManager: Starting background generation for ${mood}`);
-        this.isCaching.add(mood);
 
-        try {
-            const prompt = this.getPromptForMood(mood, 30); // Default intensity
-            // Use silent mode to avoid UI spam
-            const result = await this.client.generate(prompt, true, true);
+        const generationPromise = (async () => {
+            try {
+                const prompt = this.getPromptForMood(mood, 30); // Default intensity
+                // Use silent mode to avoid UI spam
+                const result = await this.client.generate(prompt, true, true);
 
-            if (result.tracks && result.tracks.length > 0) {
-                const currentCache = this.moodCache.get(mood) || [];
-                currentCache.push(...result.tracks);
-                this.moodCache.set(mood, currentCache);
-                console.log(`MusicManager: Cached ${result.tracks.length} tracks for ${mood}`);
+                if (result.tracks && result.tracks.length > 0) {
+                    const currentCache = this.moodCache.get(mood) || [];
+                    currentCache.push(...result.tracks);
+                    this.moodCache.set(mood, currentCache);
+                    console.log(`MusicManager: Cached ${result.tracks.length} tracks for ${mood}`);
+                }
+            } catch (error) {
+                console.error(`MusicManager: Failed to cache for ${mood}`, error);
+            } finally {
+                this.pendingGenerations.delete(mood);
             }
-        } catch (error) {
-            console.error(`MusicManager: Failed to cache for ${mood}`, error);
-        } finally {
-            this.isCaching.delete(mood);
-        }
+        })();
+
+        this.pendingGenerations.set(mood, generationPromise);
+        return generationPromise;
     }
 
     /**
@@ -156,7 +160,22 @@ export class MusicManager {
             console.log(`MusicManager: Generating music - mood=${this.currentMood}, intensity=${this.currentIntensity}`);
 
             // Check cache first!
-            const cachedTracks = this.moodCache.get(this.currentMood);
+            let cachedTracks = this.moodCache.get(this.currentMood);
+
+            // If cache is empty but we have a pending generation, wait for it!
+            if ((!cachedTracks || cachedTracks.length === 0) && this.pendingGenerations.has(this.currentMood)) {
+                console.log(`MusicManager: Waiting for background generation to complete for ${this.currentMood}...`);
+                vscode.window.setStatusBarMessage(`AgenticSuno: Waiting for background generation...`, 3000);
+
+                try {
+                    await this.pendingGenerations.get(this.currentMood);
+                    // Refresh cache check
+                    cachedTracks = this.moodCache.get(this.currentMood);
+                } catch (e) {
+                    console.error('MusicManager: Error waiting for background generation', e);
+                }
+            }
+
             if (cachedTracks && cachedTracks.length > 0) {
                 console.log(`MusicManager: Cache HIT for ${this.currentMood}`);
                 const track = cachedTracks.shift();
