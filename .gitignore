@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+
+# VSCode test artifacts (downloaded Electron, caches, etc.)
+.vscode-test/
+
+# IDE
+.vscode/*.log
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
