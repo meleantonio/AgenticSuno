@@ -1,0 +1,402 @@
+/* AgenticSuno Player - Premium Dark Mode Design */
+
+:root {
+    --bg-primary: #0d0d12;
+    --bg-secondary: #161620;
+    --bg-glass: rgba(26, 26, 36, 0.85);
+    --accent-epic: #ff6b35;
+    --accent-tense: #dc3545;
+    --accent-triumphant: #28a745;
+    --accent-focused: #6366f1;
+    --accent-ambient: #8b5cf6;
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.7);
+    --text-muted: rgba(255, 255, 255, 0.4);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --glow-color: rgba(99, 102, 241, 0.4);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 0;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+#player-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    min-height: 100%;
+}
+
+/* Glass card effect */
+.glass-card {
+    background: var(--bg-glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 16px;
+}
+
+/* Now Playing Section */
+#now-playing {
+    text-align: center;
+    padding: 20px 16px;
+}
+
+#track-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+#track-style {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Mood Badge */
+#mood-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 12px;
+    background: rgba(99, 102, 241, 0.2);
+    color: var(--accent-focused);
+    transition: all 0.3s ease;
+}
+
+#mood-badge.epic {
+    background: rgba(255, 107, 53, 0.2);
+    color: var(--accent-epic);
+    box-shadow: 0 0 20px rgba(255, 107, 53, 0.3);
+}
+
+#mood-badge.tense {
+    background: rgba(220, 53, 69, 0.2);
+    color: var(--accent-tense);
+    box-shadow: 0 0 20px rgba(220, 53, 69, 0.3);
+}
+
+#mood-badge.triumphant {
+    background: rgba(40, 167, 69, 0.2);
+    color: var(--accent-triumphant);
+    box-shadow: 0 0 20px rgba(40, 167, 69, 0.3);
+}
+
+#mood-badge.ambient {
+    background: rgba(139, 92, 246, 0.2);
+    color: var(--accent-ambient);
+}
+
+/* Visualizer */
+#visualizer-container {
+    height: 60px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 3px;
+    margin: 16px 0;
+}
+
+.visualizer-bar {
+    width: 4px;
+    background: linear-gradient(to top, var(--accent-focused), var(--accent-ambient));
+    border-radius: 2px;
+    transition: height 0.1s ease;
+    min-height: 4px;
+}
+
+/* Progress Bar */
+#progress-container {
+    position: relative;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    margin: 12px 0;
+    cursor: pointer;
+}
+
+#progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-focused), var(--accent-ambient));
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.1s linear;
+}
+
+#progress-thumb {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 12px;
+    height: 12px;
+    background: #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 10px var(--glow-color);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+#progress-container:hover #progress-thumb {
+    opacity: 1;
+}
+
+/* Time Display */
+#time-display {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* Controls */
+#controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 12px 0;
+}
+
+.control-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.control-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.control-btn.primary {
+    width: 48px;
+    height: 48px;
+    font-size: 24px;
+    background: linear-gradient(135deg, var(--accent-focused), var(--accent-ambient));
+    color: #fff;
+    box-shadow: 0 4px 20px var(--glow-color);
+}
+
+.control-btn.primary:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px rgba(99, 102, 241, 0.6);
+}
+
+/* Volume Control */
+#volume-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+#volume-icon {
+    font-size: 16px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+#volume-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+#volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    background: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+/* Activity Feed */
+#activity-section {
+    margin-top: 8px;
+}
+
+#activity-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+#activity-header h4 {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#agent-count {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: rgba(99, 102, 241, 0.2);
+    color: var(--accent-focused);
+    border-radius: 10px;
+}
+
+#activity-feed {
+    max-height: 120px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    font-size: 12px;
+}
+
+.activity-time {
+    color: var(--text-muted);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.activity-text {
+    color: var(--text-secondary);
+    flex: 1;
+    line-height: 1.4;
+}
+
+.activity-agent {
+    font-size: 10px;
+    padding: 2px 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: var(--text-muted);
+}
+
+/* Intensity Meter */
+#intensity-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+#intensity-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    width: 60px;
+}
+
+#intensity-bar {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+#intensity-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-ambient), var(--accent-focused), var(--accent-epic));
+    border-radius: 3px;
+    width: 50%;
+    transition: width 0.3s ease;
+}
+
+#intensity-value {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    width: 35px;
+    text-align: right;
+}
+
+/* Status Message */
+#status-message {
+    text-align: center;
+    padding: 16px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+#status-message.generating {
+    color: var(--accent-focused);
+}
+
+/* Animations */
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.generating #status-message {
+    animation: pulse 1.5s infinite;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
