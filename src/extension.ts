@@ -75,7 +75,8 @@ export function activate(context: vscode.ExtensionContext) {
             if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
                 statusBarManager?.setGenerating();
                 musicManager.startFlowFromActivity(activity).then(() => {
-                    statusBarManager?.setPlaying(musicManager?.getCurrentMood());
+                    const mood = musicManager?.getCurrentMood();
+                    statusBarManager?.setPlaying(mood ?? 'focused');
                 }).catch((e) => {
                     log(`Start from activity error: ${e}`);
                     statusBarManager?.setIdle();
