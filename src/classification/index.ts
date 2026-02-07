@@ -1,0 +1,1 @@
+export { MoodClassifier } from './MoodClassifier';

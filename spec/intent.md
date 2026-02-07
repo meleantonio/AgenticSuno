@@ -1,25 +1,33 @@
-# Intent: AgenticSuno - Adaptive AI Music for Coding Agents
+# Intent: AgenticSuno - AI Coding Agent Music Companion
 
 ## Vision
-Create a VS Code extension that enhances the "Agentic" coding experience by generating and playing adaptive background music using the Suno API. The music should reflect the emotional and operational state of the active AI agents (Antigravity, Gemini CLI, Claude Code, Cursor).
 
-## Core Experience
-- **Adaptive Soundtrack:** The music changes seamlessly based on the agent's activity and "intensity".
-    - **High Intensity/Epic:** When starting massive, complex tasks.
-    - **Tension/Dark:** When encountering errors, debugging, or facing difficult problems.
-    - **Flow/Neutral:** During steady progress or routine tasks.
-- **Seamless Continuity:** Music never stops while agents are working. It uses Suno's "extend" feature to create an infinite, evolving stream.
-- **Symphonic Parallelism:** If multiple agents are active, the music should blend their states into a "symphony" (stretch goal/future iteration).
-- **Integrated Player:** A non-intrusive audio player within VS Code to control volume and playback.
+**AgenticSuno** is a VS Code extension that transforms the invisible work of AI coding agents into an immersive auditory experience. By analyzing the activity patterns of AI agents (Antigravity, Gemini CLI, Cursor, Claude Code), the extension generates adaptive, real-time music using the Suno API that sonifies the agent's cognitive state.
 
-## Key Integrations
-- **Suno API:** For generating and extending music clips.
-- **Agent Watchers:** Plugins/listeners for:
-    - Antigravity (this agent)
-    - Gemini CLI
-    - Claude Code
-    - Cursor calls
-- **VS Code API:** For the playback interface and extension lifecycle.
+## Core Concept
 
-## The "Vibe"
-The music should have a consistent "theme" defined by the project's big picture, but evolve dynamically. It turns the act of watching an AI agent work into a cinematic experience.
+> *"When your AI agent struggles with a complex bug, the music darkens. When it embarks on an epic refactoring task, the symphony builds. When multiple agents work in parallel, their individual themes weave together into a harmonious orchestra."*
+
+The music never stops during active agent work—it evolves, transitions, and adapts seamlessly based on:
+- **Task Complexity**: Harder tasks = darker, more intense music
+- **Task Phase**: Planning = thoughtful, Execution = rhythmic, Verification = uplifting
+- **Agent Mood**: Errors/retries = tension, Success = resolution
+- **Parallelism**: Multiple agents = layered symphonic composition
+
+## Target Platforms
+
+1. **Primary**: VS Code Extension (for Antigravity/Cursor integration)
+2. **Future**: Claude Code plugin, Gemini CLI companion
+
+## Key Differentiators
+
+- **Seamless Playback**: Uses Suno's "extend" feature to create continuous music without gaps
+- **Project Theme**: Generates a unique musical identity for each project based on codebase analysis
+- **Multi-Agent Symphony**: Orchestrates music when parallel agents are working
+
+## User Experience Goals
+
+1. **Invisible Integration**: Music starts automatically when agent activity is detected
+2. **Non-Intrusive**: Easy volume control and quick mute from status bar
+3. **Delightful**: Transforms dry coding sessions into cinematic experiences
+4. **Informative**: Users can "hear" what their agents are doing without watching output

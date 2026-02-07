@@ -1,0 +1,132 @@
+{
+    "name": "agentic-suno",
+    "displayName": "AgenticSuno",
+    "description": "Adaptive AI Music for Coding Agents",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "agenticSuno.start",
+                "title": "AgenticSuno: Start Music"
+            },
+            {
+                "command": "agenticSuno.stop",
+                "title": "AgenticSuno: Stop Music"
+            },
+            {
+                "command": "agenticSuno.pause",
+                "title": "AgenticSuno: Pause Music"
+            },
+            {
+                "command": "agenticSuno.resume",
+                "title": "AgenticSuno: Resume Music"
+            },
+            {
+                "command": "agenticSuno.togglePlayPause",
+                "title": "AgenticSuno: Toggle Play/Pause"
+            },
+            {
+                "command": "agenticSuno.skip",
+                "title": "AgenticSuno: Skip Track"
+            },
+            {
+                "command": "agenticSuno.showPlayer",
+                "title": "AgenticSuno: Show Player"
+            }
+        ],
+        "configuration": {
+            "title": "AgenticSuno",
+            "properties": {
+                "agenticSuno.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Suno API Key (or Cookie) for generating music."
+                },
+                "agenticSuno.autoPlayOnActivity": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically start playing music when AI agent activity is detected."
+                },
+                "agenticSuno.styles.working": {
+                    "type": "string",
+                    "default": "lo-fi beats, focus, coding",
+                    "description": "Musical style for normal working state."
+                },
+                "agenticSuno.styles.error": {
+                    "type": "string",
+                    "default": "dark ambient, tension, cinematic",
+                    "description": "Musical style for error state."
+                },
+                "agenticSuno.styles.success": {
+                    "type": "string",
+                    "default": "uplifting, epic, triumph",
+                    "description": "Musical style for success state."
+                },
+                "agenticSuno.useMock": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use mock data instead of real Suno API (useful for testing or if API is down)."
+                }
+            }
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "agenticSuno-view",
+                    "title": "AgenticSuno",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "agenticSuno-view": [
+                {
+                    "id": "agenticSuno.player",
+                    "name": "Player",
+                    "type": "webview",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run package",
+        "compile": "webpack",
+        "watch": "webpack --watch",
+        "package": "webpack --mode production --devtool hidden-source-map",
+        "compile-tests": "tsc -p . --outDir out",
+        "watch-tests": "tsc -p . -w --outDir out",
+        "pretest": "npm run compile-tests && npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/glob": "^8.1.0",
+        "@types/mocha": "^10.0.1",
+        "@types/node": "^25.2.1",
+        "@types/vscode": "^1.85.0",
+        "@typescript-eslint/eslint-plugin": "^5.59.8",
+        "@typescript-eslint/parser": "^5.59.8",
+        "@vscode/test-electron": "^2.3.2",
+        "eslint": "^8.41.0",
+        "glob": "^8.1.0",
+        "mocha": "^10.2.0",
+        "ts-loader": "^9.4.3",
+        "typescript": "^5.9.3",
+        "webpack": "^5.85.0",
+        "webpack-cli": "^5.1.1"
+    },
+    "dependencies": {
+        "axios": "^1.13.4"
+    }
+}
