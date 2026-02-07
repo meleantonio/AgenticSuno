@@ -27,13 +27,6 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
             ]
         };
 
-        // Keep webview alive when sidebar is hidden so audio continues playing
-        (webviewView as any).options = {
-            webviewOptions: {
-                retainContextWhenHidden: true
-            }
-        };
-
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage(data => {

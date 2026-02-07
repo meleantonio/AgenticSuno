@@ -36,7 +36,11 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         context.subscriptions.push(
-            vscode.window.registerWebviewViewProvider(PlayerViewProvider.viewType, playerProvider)
+            vscode.window.registerWebviewViewProvider(PlayerViewProvider.viewType, playerProvider, {
+                webviewOptions: {
+                    retainContextWhenHidden: true, // Keep player webview alive when sidebar is closed or another tab is focused so music keeps playing
+                },
+            })
         );
         log('PlayerViewProvider registered');
 
@@ -53,7 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         activityMonitor = new ActivityMonitor(workspaceFolder);
 
-        // Wire activity to music manager
+        // Wire activity to music manager: start generation on first activity (e.g. user sent chat message)
         activityMonitor.onActivity((activity) => {
             log(`Activity detected: ${activity.agentType} - ${activity.classification.mood}`);
             musicManager?.handleActivity(activity);
@@ -64,18 +68,25 @@ export function activate(context: vscode.ExtensionContext) {
                 mood: activity.classification.mood,
                 agentCount: activityMonitor?.getActiveAgentCount(),
             });
+
+            // Start music as soon as user sends a message (first activity); content drives mood
+            const config = vscode.workspace.getConfiguration('agenticSuno');
+            const autoPlay = config.get<boolean>('autoPlayOnActivity') !== false;
+            if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
+                statusBarManager?.setGenerating();
+                musicManager.startFlowFromActivity(activity).then(() => {
+                    statusBarManager?.setPlaying(musicManager?.getCurrentMood());
+                }).catch((e) => {
+                    log(`Start from activity error: ${e}`);
+                    statusBarManager?.setIdle();
+                });
+            }
         });
 
         activityMonitor.onAgentStart(({ agentType }) => {
             log(`Agent started: ${agentType}`);
             vscode.window.showInformationMessage(`AgenticSuno: Detected ${agentType} activity!`);
-
-            // Auto-start music if not playing
-            const config = vscode.workspace.getConfiguration('agenticSuno');
-            const autoPlay = config.get<boolean>('autoPlayOnActivity') !== false; // Default true
-            if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
-                musicManager.startFlow();
-            }
+            // Music starts on first activity (startFlowFromActivity), not here, so content drives initial mood
         });
 
         activityMonitor.onAgentEnd(({ agentType, duration }) => {

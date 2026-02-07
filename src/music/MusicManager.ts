@@ -27,6 +27,10 @@ export class MusicManager {
     private generationStartTime: number = 0;
     private generationIntervalId: NodeJS.Timeout | undefined;
 
+    // Debounce extend-on-activity to avoid too many concurrent extensions
+    private lastExtendOnActivityTime: number = 0;
+    private readonly EXTEND_ON_ACTIVITY_DEBOUNCE_MS = 12000;
+
     // Background music cache
     private moodCache: Map<Mood, MusicTrack[]> = new Map();
     private pendingGenerations: Map<Mood, Promise<void>> = new Map();
@@ -83,15 +87,21 @@ export class MusicManager {
     }
 
     /**
-     * Handle incoming agent activity
+     * Handle incoming agent activity.
+     * Updates mood and, when already playing, extends the song in the new mood direction.
      */
     public handleActivity(activity: AgentActivity): void {
         console.log(`MusicManager: Activity received - ${activity.classification.mood} (${activity.classification.intensity})`);
 
-        // Update current mood and intensity
+        // Re-classify from raw text when we have meaningful content (e.g. output channel)
+        const classification = activity.rawText.length > 20
+            ? this.classifier.classify(activity.rawText)
+            : activity.classification;
+
         const prevMood = this.currentMood;
-        this.currentMood = activity.classification.mood;
-        this.currentIntensity = activity.classification.intensity;
+        const prevIntensity = this.currentIntensity;
+        this.currentMood = classification.mood;
+        this.currentIntensity = classification.intensity;
 
         // Update player UI
         this.playerProvider.updateState({
@@ -99,24 +109,36 @@ export class MusicManager {
             intensity: this.currentIntensity,
         });
 
-        // Add to activity feed
-        this.playerProvider.addActivity(activity);
+        // Add to activity feed (use original activity with possibly richer classification)
+        this.playerProvider.addActivity({
+            ...activity,
+            classification,
+        });
+
+        // If we're already playing and mood/intensity changed, extend the song in this direction (debounced)
+        const moodOrIntensityChanged = prevMood !== this.currentMood || Math.abs(prevIntensity - this.currentIntensity) > 15;
+        const now = Date.now();
+        const debounceOk = now - this.lastExtendOnActivityTime >= this.EXTEND_ON_ACTIVITY_DEBOUNCE_MS;
+        if (this.isPlaying && moodOrIntensityChanged && debounceOk) {
+            this.lastExtendOnActivityTime = now;
+            console.log(`MusicManager: Extending song toward ${this.currentMood} (${this.currentIntensity})`);
+            this.extendFlow();
+        }
 
         // Check for significant mood transition
         if (this.classifier.detectMoodTransition(prevMood, this.currentMood)) {
             console.log(`MusicManager: Significant mood transition ${prevMood} -> ${this.currentMood}`);
-            // Could trigger immediate transition here
         }
 
         // Convert to legacy state and handle
         const legacyState: AgentState = {
             source: activity.agentType,
-            status: activity.classification.mood === 'ambient' ? 'idle' :
-                activity.classification.mood === 'tense' ? 'error' :
-                    activity.classification.mood === 'triumphant' ? 'success' : 'working',
-            intensity: Math.round(activity.classification.intensity / 10),
+            status: classification.mood === 'ambient' ? 'idle' :
+                classification.mood === 'tense' ? 'error' :
+                    classification.mood === 'triumphant' ? 'success' : 'working',
+            intensity: Math.round(classification.intensity / 10),
             currentTask: activity.rawText.substring(0, 100),
-            mood: activity.classification.mood,
+            mood: classification.mood,
         };
 
         this.handleStateChange(legacyState);
@@ -151,7 +173,31 @@ export class MusicManager {
         return newState.status !== this.state.status || newState.intensity !== this.state.intensity;
     }
 
-    public async startFlow() {
+    /**
+     * Start music as soon as the user sends a message (first activity).
+     * Uses the activity content to set mood and optional prompt hints.
+     */
+    public async startFlowFromActivity(activity: AgentActivity): Promise<void> {
+        if (this.isPlaying) return;
+
+        // Classify from chat/activity content for content-driven mood
+        const classification = activity.rawText.length > 10
+            ? this.classifier.classify(activity.rawText)
+            : activity.classification;
+        this.currentMood = classification.mood;
+        this.currentIntensity = classification.intensity;
+
+        this.playerProvider.updateState({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+        });
+        this.playerProvider.addActivity({ ...activity, classification });
+
+        console.log(`MusicManager: Starting from activity - mood=${this.currentMood}, intensity=${this.currentIntensity}`);
+        await this.startFlow(activity.rawText);
+    }
+
+    public async startFlow(customPromptHint?: string) {
         if (this.isPlaying) return;
         this.isPlaying = true;
 
@@ -198,7 +244,8 @@ export class MusicManager {
             // Start the generation timer UI
             this.startGenerationTimer();
 
-            const result = await this.client.generate(prompt);
+            const finalPrompt = this.blendContentHint(prompt, customPromptHint);
+            const result = await this.client.generate(finalPrompt);
 
             // Stop timer and show results
             this.stopGenerationTimer();
@@ -351,6 +398,17 @@ export class MusicManager {
         console.log(`MusicManager: Generation took ${seconds}s (${metrics.pollAttempts} poll attempts)`);
         vscode.window.showInformationMessage(`AgenticSuno: Music ready in ${seconds}s`);
         this.playerProvider.showGenerationComplete(parseFloat(seconds));
+    }
+
+    /**
+     * Blend optional content hint (e.g. from chat) into the mood prompt for more relevant music.
+     */
+    private blendContentHint(basePrompt: string, contentHint?: string): string {
+        if (!contentHint || contentHint.length < 5) return basePrompt;
+        // Take a short, sanitized slice to avoid API limits and noise
+        const sanitized = contentHint.replace(/\s+/g, ' ').trim().substring(0, 80);
+        if (sanitized.length < 5) return basePrompt;
+        return `${basePrompt}, inspired by: ${sanitized}`;
     }
 
     /**
