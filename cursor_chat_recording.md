@@ -131,3 +131,42 @@ A previous attempt set `retainContextWhenHidden: true` on `(webviewView as any).
 
 ### Result
 The player webview is now retained when hidden, so closing the sidebar or changing sidebar tabs no longer stops playback. Stopping still happens only via the stop command or the player’s stop button.
+
+---
+
+## 2026-02-07: Brainstorm – Persist songs across sessions; first song from repo/specs/README
+
+### Request
+- Songs generated in a session should stay available for playing later, or in other sessions.
+- The **first song ever** for the repo should be based on specs, README, and/or repo name; if no info is available, the player can start with mock music. This first song should always be available to play.
+- Launching agents then triggers new music to be created (existing behavior).
+
+### Brainstorm (summary)
+
+**1. Where to persist**
+- **`context.workspaceState`** (VS Code Extension API): per-workspace, survives restarts. Ideal for "song library" and "project theme track" so each repo has its own persisted tracks.
+- Optional: **`context.globalState`** for cross-workspace "recent tracks".
+- Optional: Workspace folder (e.g. `.agentic-suno/`) for metadata or downloaded audio; add to `.gitignore` if storing binaries.
+
+**2. What to persist**
+- MusicTrack-like: id, audio_url, title, mood, generatedAt, optional prompt/style. Suno URLs may expire: (A) Store URL only, accept expiry. (B) Download MP3 to workspace. (C) For project theme, store prompt to regenerate on demand.
+- Project theme: `{ track?, prompt, style?, generatedAt? }`. Play track if URL works; else regenerate from prompt.
+
+**3. First song (project theme)**
+- When: First use in workspace (no workspaceState key).
+- Prompt: repo name → README (first ~500 chars) → spec/*.md → package.json name/description. Fallback: no theme, use mock when user hits Play.
+- Persist in workspaceState (and optionally `.agentic-suno/project-theme.json`).
+
+**4. Session vs future**
+- On each generation, addToLibrary + persist. On activate, load library from workspaceState. Show "Library" / "Previous tracks" in player (e.g. last 50).
+
+**5. Player idle UX**
+- "Play project theme" or "Play mock" if no theme. Library section to pick past tracks. Agents still trigger new music and add to library.
+
+**6. Implementation**
+- Extension: pass context to MusicManager; on activate: loadPersistedLibrary(), ensureProjectTheme() (lazy).
+- MusicManager: getProjectTheme(), setProjectTheme(), getLibrary(), addToLibrary(), persistLibrary(), deriveProjectThemePrompt(), playProjectTheme().
+- Player: "Play project theme" button, Library list.
+
+**7. Edge cases**
+- No workspace: mock only. No API key: mock for theme. URL expiry: offer Regenerate. First launch: lazy project theme on first Play.
