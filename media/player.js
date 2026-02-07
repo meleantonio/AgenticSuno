@@ -7,6 +7,8 @@
     let currentMood = 'focused';
     let visualizerBars = [];
     let animationFrameId = null;
+    let audioEnabled = false; // Track if user has enabled audio via gesture
+    let queuedTrack = null;   // Track queued while waiting for user gesture
 
     // Initialize on load
     document.addEventListener('DOMContentLoaded', init);
@@ -17,6 +19,9 @@
 
         // Setup visualizer bars
         setupVisualizer();
+
+        // Setup audio enable overlay
+        setupAudioEnable();
 
         // Setup event listeners
         setupAudioEvents();
@@ -41,6 +46,23 @@
             container.appendChild(bar);
             visualizerBars.push(bar);
         }
+    }
+
+    function setupAudioEnable() {
+        const overlay = document.getElementById('audio-enable-overlay');
+        if (!overlay) return;
+
+        overlay.addEventListener('click', () => {
+            log('User enabled audio');
+            audioEnabled = true;
+            overlay.style.display = 'none';
+
+            // Play queued track if any
+            if (queuedTrack) {
+                playTrackInternal(queuedTrack.url, queuedTrack.title, queuedTrack.style, queuedTrack.mood);
+                queuedTrack = null;
+            }
+        });
     }
 
     function setupAudioEvents() {
@@ -176,10 +198,50 @@
             case 'addActivity':
                 addActivityItem(message.activity);
                 break;
+            case 'generatingUpdate':
+                showGeneratingTimer(message.elapsedSeconds);
+                break;
+            case 'generationComplete':
+                showGenerationComplete(message.totalSeconds);
+                break;
         }
     }
 
+    function showGeneratingTimer(elapsedSeconds) {
+        const titleEl = document.getElementById('track-title');
+        const styleEl = document.getElementById('track-style');
+        if (titleEl) titleEl.textContent = 'Generating Music...';
+        if (styleEl) styleEl.textContent = `⏱️ ${formatTime(elapsedSeconds)} elapsed`;
+    }
+
+    function showGenerationComplete(totalSeconds) {
+        const styleEl = document.getElementById('track-style');
+        if (styleEl) styleEl.textContent = `✅ Generated in ${totalSeconds.toFixed(1)}s`;
+    }
+
     function playTrack(url, title, style, mood) {
+        log('playTrack called: ' + url);
+
+        // If audio not enabled by user gesture, queue the track and show overlay
+        if (!audioEnabled) {
+            log('Audio not enabled, queuing track');
+            queuedTrack = { url, title, style, mood };
+            const overlay = document.getElementById('audio-enable-overlay');
+            if (overlay) overlay.style.display = 'flex';
+
+            // Update UI to show track is ready
+            const titleEl = document.getElementById('track-title');
+            const styleEl = document.getElementById('track-style');
+            if (titleEl) titleEl.textContent = title || 'Ready to Play';
+            if (styleEl) styleEl.textContent = 'Click "Enable Audio" to start';
+            if (mood) setMood(mood);
+            return;
+        }
+
+        playTrackInternal(url, title, style, mood);
+    }
+
+    function playTrackInternal(url, title, style, mood) {
         log('Playing: ' + url);
 
         if (!audioElement) {

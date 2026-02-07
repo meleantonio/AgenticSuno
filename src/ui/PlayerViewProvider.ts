@@ -27,6 +27,13 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
             ]
         };
 
+        // Keep webview alive when sidebar is hidden so audio continues playing
+        (webviewView as any).options = {
+            webviewOptions: {
+                retainContextWhenHidden: true
+            }
+        };
+
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage(data => {
@@ -114,6 +121,30 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * Show generating state with elapsed time
+     */
+    public showGenerating(elapsedSeconds: number) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'generatingUpdate',
+                elapsedSeconds
+            });
+        }
+    }
+
+    /**
+     * Show generation complete with total time
+     */
+    public showGenerationComplete(totalSeconds: number) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'generationComplete',
+                totalSeconds
+            });
+        }
+    }
+
     private _getHtmlForWebview(webview: vscode.Webview) {
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'player.js'));
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'style.css'));
@@ -129,6 +160,14 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                 <title>AgenticSuno Player</title>
             </head>
             <body>
+                <!-- Audio Enable Overlay - Click to allow playback -->
+                <div id="audio-enable-overlay" class="audio-overlay">
+                    <button id="enable-audio-btn" class="enable-audio-btn">
+                        🔊 Enable Audio
+                    </button>
+                    <p class="overlay-hint">Click to enable music playback</p>
+                </div>
+                
                 <div id="player-container">
                     <!-- Now Playing Section -->
                     <div id="now-playing" class="glass-card">

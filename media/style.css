@@ -400,3 +400,45 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.3);
 }
+
+/* Audio Enable Overlay */
+#audio-enable-overlay {
+    display: none;
+    /* Hidden by default, shown when track queued */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(13, 13, 18, 0.95);
+    z-index: 100;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    backdrop-filter: blur(10px);
+}
+
+.enable-audio-btn {
+    padding: 16px 32px;
+    font-size: 18px;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--accent-focused), var(--accent-ambient));
+    color: #fff;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    box-shadow: 0 4px 30px var(--glow-color);
+    transition: all 0.3s ease;
+}
+
+.enable-audio-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 40px rgba(99, 102, 241, 0.7);
+}
+
+.overlay-hint {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+}

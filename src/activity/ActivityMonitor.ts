@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AgentActivity, AgentType, Mood, ActivityClassification, AgentState } from '../types';
 import { OutputChannelMonitor } from './OutputChannelMonitor';
 import { TerminalMonitor } from './TerminalMonitor';
+import { FileEditMonitor } from './FileEditMonitor';
 
 /**
  * Unified Activity Monitor - Facade combining all activity sources.
@@ -23,6 +24,7 @@ export class ActivityMonitor {
 
     private outputMonitor: OutputChannelMonitor;
     private terminalMonitor: TerminalMonitor;
+    private fileEditMonitor: FileEditMonitor;
     private fileWatcher: vscode.FileSystemWatcher | undefined;
 
     private disposables: vscode.Disposable[] = [];
@@ -36,6 +38,7 @@ export class ActivityMonitor {
     constructor(private workspaceRoot?: string) {
         this.outputMonitor = new OutputChannelMonitor();
         this.terminalMonitor = new TerminalMonitor();
+        this.fileEditMonitor = new FileEditMonitor();
         console.log('ActivityMonitor: Initialized');
     }
 
@@ -45,6 +48,7 @@ export class ActivityMonitor {
         // Start sub-monitors
         this.outputMonitor.start();
         this.terminalMonitor.start();
+        this.fileEditMonitor.start();
 
         // Wire up output channel events
         this.disposables.push(
@@ -59,6 +63,17 @@ export class ActivityMonitor {
             this.terminalMonitor.onActivity((activity) => this.handleActivity(activity))
         );
 
+        // Wire up file edit monitor (PRIMARY way to detect Cursor Composer)
+        this.disposables.push(
+            this.fileEditMonitor.onActivity((activity) => this.handleActivity(activity))
+        );
+        this.disposables.push(
+            this.fileEditMonitor.onAgentStart((e) => {
+                console.log(`ActivityMonitor: FileEditMonitor detected agent start - ${e.agentType}`);
+                this._onAgentStart.fire(e);
+            })
+        );
+
         // Setup file system watcher for agent artifacts
         if (this.workspaceRoot) {
             this.setupFileWatcher();
@@ -69,6 +84,7 @@ export class ActivityMonitor {
         console.log('ActivityMonitor: Stopping all monitors...');
         this.outputMonitor.stop();
         this.terminalMonitor.stop();
+        this.fileEditMonitor.stop();
         this.fileWatcher?.dispose();
         this.disposables.forEach(d => d.dispose());
         this.disposables = [];
