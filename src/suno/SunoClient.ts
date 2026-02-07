@@ -143,10 +143,19 @@ export class SunoClient {
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 console.log(`SunoClient: Poll attempt ${attempt + 1}, status: ${data.data.status}, elapsed: ${elapsed}s`);
 
+                // Return as soon as we have playable tracks: FIRST_SUCCESS (first track ready for streaming) or SUCCESS (all done)
                 if (data.data.status === 'SUCCESS' || data.data.status === 'FIRST_SUCCESS') {
-                    // Task complete, extract tracks
                     const tracks = data.data.response?.sunoData || [];
-                    return { tracks: tracks.map(t => this.normalizeTrack(t)), pollAttempts: attempt + 1 };
+                    if (tracks.length > 0) {
+                        if (data.data.status === 'FIRST_SUCCESS') {
+                            console.log(`SunoClient: First track(s) ready at FIRST_SUCCESS - returning ${tracks.length} track(s) for immediate playback`);
+                        }
+                        return { tracks: tracks.map(t => this.normalizeTrack(t)), pollAttempts: attempt + 1 };
+                    }
+                    // FIRST_SUCCESS with empty sunoData - keep polling until we have tracks or SUCCESS
+                    if (data.data.status === 'SUCCESS') {
+                        return { tracks: [], pollAttempts: attempt + 1 };
+                    }
                 }
 
                 if (data.data.status.includes('FAILED') || data.data.status.includes('ERROR')) {
@@ -166,7 +175,8 @@ export class SunoClient {
     }
 
     /**
-     * Normalize SunoTrack to our MusicTrack interface
+     * Normalize SunoTrack to our MusicTrack interface.
+     * Prefer streamAudioUrl when present so playback can start immediately (e.g. at FIRST_SUCCESS).
      */
     private normalizeTrack(track: SunoTrack): MusicTrack {
         return {

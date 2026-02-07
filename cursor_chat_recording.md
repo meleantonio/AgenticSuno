@@ -69,3 +69,17 @@ User shared Cursor/VS Code extension activation logs, including AgenticSuno star
 
 ### Conclusion
 AgenticSuno started correctly; Suno API key is set and at least one background track completed. The long PENDING on the second task is consistent with Suno API latency for one of two parallel generations. No change requested; log summary recorded for reference.
+
+---
+
+## 2026-02-07: Start streaming at FIRST_SUCCESS
+
+### Request
+Modify streaming so playback starts when the Suno API returns FIRST_SUCCESS (first track ready) instead of waiting for full SUCCESS.
+
+### Actions Taken
+- **`src/suno/SunoClient.ts`**:
+  - Poll loop now returns as soon as there is at least one track in `sunoData` when status is `FIRST_SUCCESS` or `SUCCESS`, so playback can start with the first track immediately.
+  - If status is `FIRST_SUCCESS` but `sunoData` is empty, polling continues until tracks are available or status becomes `SUCCESS`.
+  - Added log: `First track(s) ready at FIRST_SUCCESS - returning N track(s) for immediate playback`.
+  - Doc comment on `normalizeTrack()`: prefer `streamAudioUrl` when present so playback can start immediately (e.g. at FIRST_SUCCESS). Existing logic already used `streamAudioUrl || audioUrl`.
