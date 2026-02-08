@@ -78,8 +78,8 @@
                 },
                 "agenticSuno.useMock": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "Use mock data instead of real Suno API (useful for testing or if API is down)."
+                    "default": false,
+                    "description": "Use mock data instead of real Suno API (useful for testing or when API is down). When false and API key is set, real generation runs."
                 }
             }
         },

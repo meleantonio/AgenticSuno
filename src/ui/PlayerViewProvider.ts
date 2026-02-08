@@ -1,10 +1,19 @@
 import * as vscode from 'vscode';
 import { Mood, MusicStatus, AgentActivity, PersistedTrack } from '../types';
 
+interface PendingPlay {
+    url: string;
+    title?: string;
+    style?: string;
+    mood?: Mood;
+}
+
 export class PlayerViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'agenticSuno.player';
 
     private _view?: vscode.WebviewView;
+    private _webviewReady = false;
+    private _pendingPlay: PendingPlay | undefined;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -49,6 +58,9 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                 case 'playProjectTheme':
                     vscode.commands.executeCommand('agenticSuno.playProjectTheme');
                     break;
+                case 'startOrResume':
+                    vscode.commands.executeCommand('agenticSuno.start');
+                    break;
                 case 'playLibraryTrack':
                     if (typeof data.index === 'number') {
                         vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
@@ -60,8 +72,32 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                 case 'volumeChange':
                     // Could persist volume here
                     break;
+                case 'webviewReady':
+                    this._webviewReady = true;
+                    if (this._pendingPlay) {
+                        this._view?.webview.postMessage({
+                            type: 'play',
+                            url: this._pendingPlay.url,
+                            title: this._pendingPlay.title,
+                            style: this._pendingPlay.style,
+                            mood: this._pendingPlay.mood,
+                        });
+                        this._pendingPlay = undefined;
+                    }
+                    break;
             }
         });
+    }
+
+    /**
+     * Play now if webview is ready; otherwise store and send when webviewReady is received.
+     */
+    public playTrackWhenReady(url: string, title?: string, style?: string, mood?: Mood): void {
+        if (this._webviewReady && this._view) {
+            this._view.webview.postMessage({ type: 'play', url, title, style, mood });
+        } else {
+            this._pendingPlay = { url, title, style, mood };
+        }
     }
 
     public playTrack(url: string, title?: string, style?: string, mood?: Mood) {

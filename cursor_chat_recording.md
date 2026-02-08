@@ -227,3 +227,25 @@ User shared extension logs showing webview audio failures:
 ### Files changed
 - `src/ui/PlayerViewProvider.ts` (CSP)
 - `media/player.js` (playTrackInternal, error handler, stopPlayback)
+
+---
+
+## 2026-02-08: Webview play errors & extend retry
+
+### Request
+Work on items 2 and 3 from previous log analysis: fix webview "interrupted" play errors and improve extend polling / GENERATE_AUDIO_FAILED handling.
+
+### Actions Taken
+
+1. **media/player.js – Webview play errors**
+   - `playTrackInternal`: Call `audioElement.pause()` before loading new source to avoid overlapping play/load operations that trigger "The play() request was interrupted by a new load request" and "The play() request was interrupted by a call to pause()".
+   - In `play().catch()`, suppress errors whose message contains "interrupted" (expected when switching tracks rapidly or pausing).
+   - Same suppression in `togglePlayPause` when resuming playback.
+
+2. **src/suno/SunoClient.ts – Extend retry for transient errors**
+   - `pollForCompletion`: When status is FAILED/ERROR, set `err.isTransient = true` when the message contains "internal error" or "try again" (matches GENERATE_AUDIO_FAILED "Internal Error, Please try again later").
+   - `extend()`: Retry the full extend flow (API call + poll) once on transient errors, with a 2s delay before retry. Falls back to mock data only after both attempts fail.
+
+### Files changed
+- `media/player.js` (playTrackInternal, togglePlayPause)
+- `src/suno/SunoClient.ts` (pollForCompletion, extend)

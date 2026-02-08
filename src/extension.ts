@@ -145,7 +145,7 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
             }
             statusBarManager?.setGenerating();
             vscode.window.showInformationMessage('AgenticSuno: Starting Music...');
-            await musicManager.startFlow();
+            musicManager.startFlowWithImmediatePlayback();
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
         } catch (e) {
             log(`Start error: ${e}`);

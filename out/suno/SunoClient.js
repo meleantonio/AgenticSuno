@@ -267,14 +267,45 @@ class SunoClient {
         }
         return allTracks;
     }
-    async getMockData(prompt, isExtension = false) {
+    /**
+     * Mock track URLs for mood-based immediate playback (SoundHelix demos).
+     * Map each Mood to one URL so repository mood drives mock selection.
+     */
+    static MOCK_URLS = [
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+    ];
+    /** Map Mood to index into MOCK_URLS (epic→0, tense→1, triumphant→2, focused→0, ambient→1). */
+    static MOOD_TO_MOCK_INDEX = {
+        epic: 0,
+        tense: 1,
+        triumphant: 2,
+        focused: 0,
+        ambient: 1,
+    };
+    /**
+     * Return a single mock track for the given mood (no latency).
+     * Used for immediate playback before generated track is ready.
+     */
+    getMockTrackForMood(mood) {
+        const index = SunoClient.MOOD_TO_MOCK_INDEX[mood] ?? 0;
+        const url = SunoClient.MOCK_URLS[index] ?? SunoClient.MOCK_URLS[0];
+        return {
+            id: `mock-${mood}-${Date.now()}`,
+            audio_url: url,
+            title: `Mock (${mood})`,
+            status: 'complete',
+            duration: 120,
+            metadata: { tags: mood },
+        };
+    }
+    async getMockData(prompt, isExtension = false, mood) {
         await new Promise(resolve => setTimeout(resolve, 1500)); // Simulate latency
-        const demoTracks = [
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
-        ];
-        const randomTrack = demoTracks[Math.floor(Math.random() * demoTracks.length)];
+        const demoTracks = SunoClient.MOCK_URLS;
+        const randomTrack = mood !== undefined
+            ? demoTracks[SunoClient.MOOD_TO_MOCK_INDEX[mood] ?? 0]
+            : demoTracks[Math.floor(Math.random() * demoTracks.length)];
         return [{
                 id: `mock-${Date.now()}`,
                 audio_url: randomTrack,

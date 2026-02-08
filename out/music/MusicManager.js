@@ -275,6 +275,66 @@ class MusicManager {
             this.isPlaying = false;
         }
     }
+    /**
+     * Start playback immediately with theme or mood-based mock, then start generation in background.
+     * When generation reaches FIRST_SUCCESS (streaming), switch to the generated track.
+     */
+    async startFlowWithImmediatePlayback() {
+        if (this.isPlaying)
+            return;
+        const theme = this.projectTheme;
+        const hasThemeUrl = theme?.track?.audio_url;
+        if (hasThemeUrl) {
+            this.isPlaying = true;
+            this.currentMood = theme.track.mood ?? 'ambient';
+            this.playerProvider.updateState({ mood: this.currentMood });
+            this.playerProvider.playTrack(theme.track.audio_url, theme.track.title ?? 'Project theme', theme.style ?? theme.prompt.substring(0, 50), theme.track.mood);
+            console.log('MusicManager: Immediate playback - project theme');
+            this.startBackgroundGeneration();
+        }
+        else {
+            await this.playMockAndGenerate();
+        }
+    }
+    async playMockAndGenerate() {
+        const repoMood = await this.getRepositoryMood();
+        this.currentMood = repoMood;
+        this.currentIntensity = 30;
+        this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
+        const mockTrack = this.client.getMockTrackForMood(repoMood);
+        this.isPlaying = true;
+        this.playerProvider.playTrack(mockTrack.audio_url, mockTrack.title ?? `Mock (${repoMood})`, String(mockTrack.metadata?.tags ?? repoMood), repoMood);
+        console.log(`MusicManager: Immediate playback - mock (${repoMood})`);
+        this.startBackgroundGeneration();
+    }
+    startBackgroundGeneration() {
+        this.startGenerationTimer();
+        const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
+        this.client.generate(prompt).then((result) => {
+            if (!this.isPlaying)
+                return;
+            this.stopGenerationTimer();
+            this.showGenerationMetrics(result.metrics);
+            if (result.tracks && result.tracks.length > 0) {
+                const style = this.getPromptForMood(this.currentMood, this.currentIntensity);
+                for (const t of result.tracks) {
+                    this.addToLibrary(t, { prompt, style });
+                }
+                this.queue.push(...result.tracks);
+                this.currentTrack = result.tracks[0];
+                const first = result.tracks[0];
+                this.playerProvider.playTrack(first.audio_url, first.title ?? 'Generated Track', style, this.currentMood);
+                this.startExtensionScheduler();
+                console.log('MusicManager: Switched to generated track');
+            }
+        }).catch((error) => {
+            console.error('MusicManager: Background generation error:', error);
+            this.stopGenerationTimer();
+            vscode.window.showErrorMessage('AgenticSuno: Failed to generate music.');
+            this.isPlaying = false;
+            this.playerProvider.stop();
+        });
+    }
     stop() {
         this.isPlaying = false;
         this.queue = [];
@@ -513,9 +573,9 @@ class MusicManager {
         }
     }
     /**
-     * Derive a project-theme prompt from repo name, README, spec/, package.json.
+     * Aggregated repo text from README, spec/, package.json (for theme prompt or mood classification).
      */
-    async deriveProjectThemePrompt() {
+    async getRepositoryText() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder)
             return null;
@@ -572,8 +632,26 @@ class MusicManager {
         catch { /* ignore */ }
         if (parts.length === 0)
             return null;
-        const combined = parts.join('. ').substring(0, PROJECT_THEME_PROMPT_MAX_CHARS);
+        return parts.join('. ').substring(0, PROJECT_THEME_PROMPT_MAX_CHARS);
+    }
+    /**
+     * Derive a project-theme prompt from repo name, README, spec/, package.json.
+     */
+    async deriveProjectThemePrompt() {
+        const combined = await this.getRepositoryText();
+        if (!combined)
+            return null;
         return combined + ', instrumental';
+    }
+    /**
+     * Classify repository mood from README, spec, package.json for mock track selection.
+     */
+    async getRepositoryMood() {
+        const text = await this.getRepositoryText();
+        if (!text || text.length < 10)
+            return 'focused';
+        const classification = this.classifier.classify(text);
+        return classification.mood;
     }
     /**
      * Ensure project theme exists (lazy). Call when user opens player or first Play. No-op if no workspace or no prompt.

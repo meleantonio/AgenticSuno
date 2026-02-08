@@ -33,6 +33,7 @@
         window.addEventListener('message', handleMessage);
 
         log('Player initialized');
+        vscode.postMessage({ type: 'webviewReady' });
     }
 
     function setupVisualizer() {
@@ -294,6 +295,9 @@
         }
 
         if (audioElement) {
+            // Pause before loading new source to avoid "interrupted by new load" / "interrupted by pause"
+            audioElement.pause();
+
             // Allow CORS so remote CDN (e.g. musicfile.removeai.ai) can be loaded
             audioElement.crossOrigin = 'anonymous';
             // Use <source> with type so the browser doesn't fail format detection (Suno API typically returns MP3)
@@ -304,8 +308,13 @@
             audioElement.appendChild(source);
             audioElement.load();
             audioElement.play().catch(err => {
-                log('Play error: ' + (err && err.message ? err.message : String(err)));
-                vscode.postMessage({ type: 'error', message: err && err.message ? err.message : 'Playback failed' });
+                const msg = err && err.message ? err.message : String(err);
+                // Ignore expected "interrupted" errors when switching tracks rapidly or pausing
+                if (msg.toLowerCase().includes('interrupted')) {
+                    return;
+                }
+                log('Play error: ' + msg);
+                vscode.postMessage({ type: 'error', message: msg || 'Playback failed' });
             });
         }
 
@@ -350,7 +359,16 @@
         if (isPlaying) {
             audioElement.pause();
         } else {
-            audioElement.play().catch(err => log('Play error: ' + err));
+            // When idle (no track loaded), ask extension to start immediate playback + generation
+            const hasSource = audioElement.src && audioElement.src.length > 0;
+            if (!hasSource) {
+                vscode.postMessage({ type: 'startOrResume' });
+                return;
+            }
+            audioElement.play().catch(err => {
+                const msg = err && err.message ? err.message : String(err);
+                if (!msg.toLowerCase().includes('interrupted')) log('Play error: ' + msg);
+            });
         }
     }
 

@@ -76,6 +76,9 @@ class PlayerViewProvider {
                 case 'playProjectTheme':
                     vscode.commands.executeCommand('agenticSuno.playProjectTheme');
                     break;
+                case 'startOrResume':
+                    vscode.commands.executeCommand('agenticSuno.start');
+                    break;
                 case 'playLibraryTrack':
                     if (typeof data.index === 'number') {
                         vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
