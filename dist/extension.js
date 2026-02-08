@@ -6192,7 +6192,12 @@ function registerCommands(context, playerProvider) {
         }
     });
     // Play a track from the library by index
-    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (_context, index) => {
+    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (...args) => {
+        const index = typeof args[0] === 'number'
+            ? args[0]
+            : typeof args[1] === 'number'
+                ? args[1]
+                : undefined;
         if (musicManager && typeof index === 'number') {
             musicManager.playLibraryTrack(index);
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
@@ -6208,9 +6213,509 @@ function log(message) {
 }
 function deactivate() {
     log('AgenticSuno deactivating...');
-    musicManager?.stop();
+    musicManager?.dispose();
     activityMonitor?.dispose();
     statusBarManager?.dispose();
+}
+
+
+/***/ },
+
+/***/ "./src/lyria/LyriaClient.ts"
+/*!**********************************!*\
+  !*** ./src/lyria/LyriaClient.ts ***!
+  \**********************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LyriaClient = void 0;
+exports.parseLyriaServerMessage = parseLyriaServerMessage;
+exports.parseAudioFormatFromMime = parseAudioFormatFromMime;
+const WebSocket = __webpack_require__(/*! ws */ "ws");
+const DEFAULT_SAMPLE_RATE = 48000;
+const DEFAULT_CHANNELS = 2;
+const WS_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateMusic';
+function asObject(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value;
+    }
+    return null;
+}
+function pickString(...values) {
+    for (const value of values) {
+        if (typeof value === 'string' && value.trim().length > 0) {
+            return value;
+        }
+    }
+    return undefined;
+}
+function parseAudioFormatFromMime(mimeType) {
+    const rateMatch = /rate=(\d+)/i.exec(mimeType);
+    const channelsMatch = /channels=(\d+)/i.exec(mimeType);
+    return {
+        sampleRateHz: rateMatch ? Number(rateMatch[1]) : DEFAULT_SAMPLE_RATE,
+        channels: channelsMatch ? Number(channelsMatch[1]) : DEFAULT_CHANNELS,
+    };
+}
+function parseAudioChunk(rawChunk) {
+    const chunk = asObject(rawChunk);
+    if (!chunk) {
+        return null;
+    }
+    const inlineData = asObject(chunk.inlineData ?? chunk.inline_data);
+    const data = pickString(chunk.data, inlineData?.data, chunk.audioData, chunk.audio_data);
+    if (!data) {
+        return null;
+    }
+    const mimeType = pickString(chunk.mimeType, chunk.mime_type, inlineData?.mimeType, inlineData?.mime_type, 'audio/pcm;rate=48000;channels=2') ?? 'audio/pcm;rate=48000;channels=2';
+    const parsedFormat = parseAudioFormatFromMime(mimeType);
+    return {
+        data,
+        mimeType,
+        sampleRateHz: parsedFormat.sampleRateHz,
+        channels: parsedFormat.channels,
+    };
+}
+/**
+ * Parse a server websocket message while tolerating snake_case and camelCase fields.
+ */
+function parseLyriaServerMessage(rawMessage) {
+    const root = asObject(rawMessage) ?? {};
+    const serverContent = asObject(root.serverContent ?? root.server_content);
+    const audioChunks = serverContent?.audioChunks ?? serverContent?.audio_chunks;
+    const parsedAudio = [];
+    if (Array.isArray(audioChunks)) {
+        for (const chunk of audioChunks) {
+            const parsed = parseAudioChunk(chunk);
+            if (parsed) {
+                parsedAudio.push(parsed);
+            }
+        }
+    }
+    const filteredPromptNode = asObject(root.filteredPrompt ?? root.filtered_prompt);
+    return {
+        setupComplete: root.setupComplete !== undefined || root.setup_complete !== undefined,
+        audioPayloads: parsedAudio,
+        warning: pickString(root.warning, root.warningMessage, root.warning_message),
+        filteredPrompt: pickString(filteredPromptNode?.text, filteredPromptNode?.reason, root.filteredPromptReason, root.filtered_prompt_reason),
+    };
+}
+function rawToText(raw) {
+    if (typeof raw === 'string') {
+        return raw;
+    }
+    if (raw instanceof Buffer) {
+        return raw.toString('utf8');
+    }
+    if (Array.isArray(raw)) {
+        return Buffer.concat(raw).toString('utf8');
+    }
+    if (raw instanceof ArrayBuffer) {
+        return Buffer.from(new Uint8Array(raw)).toString('utf8');
+    }
+    if (ArrayBuffer.isView(raw)) {
+        return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString('utf8');
+    }
+    return String(raw);
+}
+class LyriaClient {
+    ws;
+    sessionInfo;
+    sequence = 0;
+    reconnectAttempt = 0;
+    reconnectTimer;
+    connectPromise;
+    manualDisconnect = false;
+    options;
+    connectedListeners = new Set();
+    disconnectedListeners = new Set();
+    chunkListeners = new Set();
+    warningListeners = new Set();
+    filteredPromptListeners = new Set();
+    errorListeners = new Set();
+    constructor(options) {
+        this.options = {
+            ...options,
+            maxReconnectAttempts: options.maxReconnectAttempts ?? 4,
+            reconnectBaseDelayMs: options.reconnectBaseDelayMs ?? 800,
+            reconnectMaxDelayMs: options.reconnectMaxDelayMs ?? 10000,
+            setupTimeoutMs: options.setupTimeoutMs ?? 10000,
+        };
+    }
+    updateOptions(next) {
+        this.options = {
+            ...this.options,
+            apiKey: next.apiKey,
+            model: next.model,
+        };
+    }
+    onConnected(listener) {
+        this.connectedListeners.add(listener);
+        return () => this.connectedListeners.delete(listener);
+    }
+    onDisconnected(listener) {
+        this.disconnectedListeners.add(listener);
+        return () => this.disconnectedListeners.delete(listener);
+    }
+    onAudioChunk(listener) {
+        this.chunkListeners.add(listener);
+        return () => this.chunkListeners.delete(listener);
+    }
+    onWarning(listener) {
+        this.warningListeners.add(listener);
+        return () => this.warningListeners.delete(listener);
+    }
+    onFilteredPrompt(listener) {
+        this.filteredPromptListeners.add(listener);
+        return () => this.filteredPromptListeners.delete(listener);
+    }
+    onError(listener) {
+        this.errorListeners.add(listener);
+        return () => this.errorListeners.delete(listener);
+    }
+    getSessionInfo() {
+        return this.sessionInfo;
+    }
+    async connect() {
+        if (!this.options.apiKey) {
+            throw new Error('Gemini API key is missing. Set agenticSuno.geminiApiKey to use Lyria realtime.');
+        }
+        if (this.ws && this.ws.readyState === WebSocket.OPEN && this.sessionInfo) {
+            return this.sessionInfo;
+        }
+        if (this.connectPromise) {
+            return this.connectPromise;
+        }
+        this.manualDisconnect = false;
+        this.connectPromise = this.openConnection();
+        try {
+            const session = await this.connectPromise;
+            return session;
+        }
+        finally {
+            this.connectPromise = undefined;
+        }
+    }
+    disconnect() {
+        this.manualDisconnect = true;
+        this.clearReconnectTimer();
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+            this.ws.close(1000, 'Client disconnect');
+        }
+        this.ws = undefined;
+        this.sessionInfo = undefined;
+    }
+    async setWeightedPrompts(prompts) {
+        const normalized = prompts
+            .filter((p) => typeof p.text === 'string' && p.text.trim().length > 0)
+            .map((p) => ({ text: p.text.trim().substring(0, 240), weight: Number(p.weight.toFixed(2)) }));
+        if (normalized.length === 0) {
+            throw new Error('Lyria requires at least one weighted prompt.');
+        }
+        this.send({
+            clientContent: {
+                weightedPrompts: normalized,
+            },
+        });
+    }
+    async setGenerationConfig(config) {
+        const payload = {};
+        if (typeof config.temperature === 'number')
+            payload.temperature = config.temperature;
+        if (typeof config.guidance === 'number')
+            payload.guidance = config.guidance;
+        if (typeof config.bpm === 'number')
+            payload.bpm = config.bpm;
+        if (typeof config.density === 'number')
+            payload.density = config.density;
+        if (typeof config.brightness === 'number')
+            payload.brightness = config.brightness;
+        if (typeof config.topK === 'number')
+            payload.topK = config.topK;
+        if (typeof config.seed === 'number')
+            payload.seed = config.seed;
+        if (Object.keys(payload).length === 0) {
+            return;
+        }
+        this.send({
+            musicGenerationConfig: payload,
+        });
+    }
+    play() {
+        this.sendPlaybackControl('PLAY');
+    }
+    pause() {
+        this.sendPlaybackControl('PAUSE');
+    }
+    stop() {
+        this.sendPlaybackControl('STOP');
+    }
+    resetContext() {
+        this.sendPlaybackControl('RESET_CONTEXT');
+    }
+    sendPlaybackControl(control) {
+        this.send({
+            playbackControl: control,
+        });
+    }
+    emitError(error) {
+        for (const listener of this.errorListeners) {
+            listener(error);
+        }
+    }
+    emitParsedServerMessage(parsed) {
+        if (parsed.warning) {
+            for (const listener of this.warningListeners) {
+                listener(parsed.warning);
+            }
+        }
+        if (parsed.filteredPrompt) {
+            for (const listener of this.filteredPromptListeners) {
+                listener(parsed.filteredPrompt);
+            }
+        }
+        if (!this.sessionInfo) {
+            return;
+        }
+        for (const payload of parsed.audioPayloads) {
+            this.sequence += 1;
+            const chunk = {
+                sessionId: this.sessionInfo.sessionId,
+                sequence: this.sequence,
+                data: payload.data,
+                mimeType: payload.mimeType,
+                sampleRateHz: payload.sampleRateHz,
+                channels: payload.channels,
+                receivedAt: Date.now(),
+            };
+            for (const listener of this.chunkListeners) {
+                listener(chunk);
+            }
+        }
+    }
+    async openConnection() {
+        return new Promise((resolve, reject) => {
+            const sessionId = `lyria-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+            this.sequence = 0;
+            const socket = new WebSocket(`${WS_ENDPOINT}?key=${encodeURIComponent(this.options.apiKey)}`);
+            this.ws = socket;
+            let settled = false;
+            const setupTimeout = setTimeout(() => {
+                if (settled)
+                    return;
+                settled = true;
+                reject(new Error('Timed out waiting for Lyria setupComplete handshake.'));
+                try {
+                    socket.close(1013, 'setup timeout');
+                }
+                catch {
+                    // no-op
+                }
+            }, this.options.setupTimeoutMs);
+            const clearSetupTimeout = () => {
+                clearTimeout(setupTimeout);
+            };
+            socket.on('open', () => {
+                this.sendRaw(socket, {
+                    setup: {
+                        model: this.options.model,
+                    },
+                });
+            });
+            socket.on('message', (raw) => {
+                let parsed = null;
+                try {
+                    const asText = rawToText(raw);
+                    const json = JSON.parse(asText);
+                    parsed = parseLyriaServerMessage(json);
+                }
+                catch (error) {
+                    this.emitError(new Error(`Failed to parse Lyria message: ${String(error)}`));
+                    return;
+                }
+                if (!parsed) {
+                    return;
+                }
+                if (parsed.setupComplete && !settled) {
+                    settled = true;
+                    clearSetupTimeout();
+                    this.reconnectAttempt = 0;
+                    this.sessionInfo = {
+                        sessionId,
+                        model: this.options.model,
+                        connectedAt: Date.now(),
+                    };
+                    for (const listener of this.connectedListeners) {
+                        listener(this.sessionInfo);
+                    }
+                    resolve(this.sessionInfo);
+                }
+                this.emitParsedServerMessage(parsed);
+            });
+            socket.on('error', (error) => {
+                const asError = error instanceof Error ? error : new Error(String(error));
+                this.emitError(asError);
+                if (!settled) {
+                    settled = true;
+                    clearSetupTimeout();
+                    reject(asError);
+                }
+            });
+            socket.on('close', (code, reasonBuffer) => {
+                const reason = reasonBuffer.toString();
+                const shouldReconnect = !this.manualDisconnect && code !== 1000;
+                this.ws = undefined;
+                this.sessionInfo = undefined;
+                if (!settled && !this.manualDisconnect) {
+                    settled = true;
+                    clearSetupTimeout();
+                    reject(new Error(`Lyria socket closed before setupComplete (code ${code}: ${reason || 'no reason'})`));
+                }
+                for (const listener of this.disconnectedListeners) {
+                    listener({ code, reason, willReconnect: shouldReconnect && this.reconnectAttempt < this.options.maxReconnectAttempts });
+                }
+                if (shouldReconnect) {
+                    this.scheduleReconnect();
+                }
+            });
+        });
+    }
+    scheduleReconnect() {
+        if (this.reconnectAttempt >= this.options.maxReconnectAttempts) {
+            this.emitError(new Error('Lyria reconnect limit reached. Falling back is recommended.'));
+            return;
+        }
+        this.clearReconnectTimer();
+        const exponential = this.options.reconnectBaseDelayMs * Math.pow(2, this.reconnectAttempt);
+        const delay = Math.min(exponential, this.options.reconnectMaxDelayMs) + Math.floor(Math.random() * 300);
+        this.reconnectAttempt += 1;
+        this.reconnectTimer = setTimeout(() => {
+            this.connect().catch((error) => {
+                const asError = error instanceof Error ? error : new Error(String(error));
+                this.emitError(asError);
+                this.scheduleReconnect();
+            });
+        }, delay);
+    }
+    clearReconnectTimer() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = undefined;
+        }
+    }
+    send(payload) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            throw new Error('Lyria websocket is not connected.');
+        }
+        this.sendRaw(this.ws, payload);
+    }
+    sendRaw(socket, payload) {
+        socket.send(JSON.stringify(payload));
+    }
+}
+exports.LyriaClient = LyriaClient;
+
+
+/***/ },
+
+/***/ "./src/music/LyriaSteering.ts"
+/*!************************************!*\
+  !*** ./src/music/LyriaSteering.ts ***!
+  \************************************/
+(__unused_webpack_module, exports) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_LYRIA_STYLE_ANCHOR = void 0;
+exports.buildWeightedPrompts = buildWeightedPrompts;
+exports.buildGenerationConfig = buildGenerationConfig;
+exports.DEFAULT_LYRIA_STYLE_ANCHOR = 'midnight ocean penthouse ambiance, executive deep-focus groove, polished downtempo electronic, warm bassline, soft keys, subtle percussion, no vocals';
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+function normalizeWeight(value) {
+    return Math.round(clamp(value, 0, 2) * 100) / 100;
+}
+function resolveStyleAnchor(anchor) {
+    const normalized = (anchor || '').trim().replace(/\s+/g, ' ');
+    if (normalized.length < 8) {
+        return exports.DEFAULT_LYRIA_STYLE_ANCHOR;
+    }
+    return normalized.substring(0, 280);
+}
+/**
+ * Convert mood + intensity (+ optional hints) into weighted prompts for Lyria.
+ */
+function buildWeightedPrompts(params) {
+    const intensity = clamp(params.intensity, 0, 100);
+    const intensity01 = intensity / 100;
+    const styleAnchor = resolveStyleAnchor(params.styleAnchor);
+    const moodPrompt = {
+        epic: 'confident rise, expansive synth layers, decisive momentum, premium modern energy',
+        tense: 'night-drive tension, controlled pulse, crisp low-end pressure, restrained suspense',
+        triumphant: 'clean uplift, confident major texture, forward motion, sophisticated optimism',
+        focused: 'steady hypnotic groove, minimal distraction, precise momentum, smooth modern polish',
+        ambient: 'calm atmospheric bed, spacious reverb, gentle motion, late-night luxury calm',
+    };
+    const prompts = [
+        {
+            text: `${styleAnchor}, ${moodPrompt[params.mood]}`,
+            weight: normalizeWeight(1.05 + intensity01 * 0.25),
+        },
+        {
+            text: intensity > 70
+                ? `${styleAnchor}, stronger rhythmic drive, tighter drums, energetic but smooth`
+                : intensity < 30
+                    ? `${styleAnchor}, sparse arrangement, softer dynamics, low tension, airy space`
+                    : `${styleAnchor}, balanced dynamics, moderate rhythmic motion, stable focus`,
+            weight: normalizeWeight(0.85),
+        },
+    ];
+    if (params.projectThemePrompt && params.projectThemePrompt.trim().length > 10) {
+        prompts.push({
+            text: `${styleAnchor}, project context: ${params.projectThemePrompt.trim().substring(0, 190)}`,
+            weight: normalizeWeight(0.75),
+        });
+    }
+    if (params.promptHint && params.promptHint.trim().length > 4) {
+        prompts.push({
+            text: `${styleAnchor}, live activity context: ${params.promptHint.trim().replace(/\s+/g, ' ').substring(0, 130)}`,
+            weight: normalizeWeight(0.55),
+        });
+    }
+    return prompts;
+}
+/**
+ * Map activity intensity to realtime generation controls.
+ */
+function buildGenerationConfig(params) {
+    const intensity = clamp(params.intensity, 0, 100);
+    const intensity01 = intensity / 100;
+    const baseBrightness = {
+        epic: 0.78,
+        tense: 0.25,
+        triumphant: 0.88,
+        focused: 0.58,
+        ambient: 0.44,
+    };
+    const baseDensity = {
+        epic: 0.82,
+        tense: 0.72,
+        triumphant: 0.76,
+        focused: 0.52,
+        ambient: 0.36,
+    };
+    return {
+        temperature: clamp(0.58 + intensity01 * 1.1, 0.2, 2),
+        guidance: clamp(2.2 + intensity01 * 2.6, 1.2, 5),
+        bpm: Math.round(86 + intensity01 * 34),
+        density: clamp(baseDensity[params.mood] * 0.6 + intensity01 * 0.5, 0, 1),
+        brightness: clamp(baseBrightness[params.mood] * 0.7 + intensity01 * 0.35, 0, 1),
+        topK: Math.round(22 + intensity01 * 26),
+    };
 }
 
 
@@ -6260,98 +6765,124 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MusicManager = void 0;
 const vscode = __importStar(__webpack_require__(/*! vscode */ "vscode"));
-const SunoClient_1 = __webpack_require__(/*! ../suno/SunoClient */ "./src/suno/SunoClient.ts");
 const MoodClassifier_1 = __webpack_require__(/*! ../classification/MoodClassifier */ "./src/classification/MoodClassifier.ts");
+const LyriaSteering_1 = __webpack_require__(/*! ./LyriaSteering */ "./src/music/LyriaSteering.ts");
+const engine_1 = __webpack_require__(/*! ./engine */ "./src/music/engine/index.ts");
 const WORKSPACE_STATE_KEY_LIBRARY = 'agenticSuno.library';
 const WORKSPACE_STATE_KEY_PROJECT_THEME = 'agenticSuno.projectTheme';
 const LIBRARY_MAX_TRACKS = 50;
 const PROJECT_THEME_PROMPT_MAX_CHARS = 400;
-/**
- * MusicManager - Enhanced orchestrator for music generation and playback.
- * Coordinates between activity detection, mood classification, and audio playback.
- */
 class MusicManager {
     playerProvider;
     workspaceState;
-    client;
+    generationEngine;
     classifier;
+    lyriaEngine;
     queue = [];
     currentTrack;
     state = { source: 'antigravity', status: 'idle', intensity: 1 };
     isPlaying = false;
+    isPaused = false;
     currentMood = 'ambient';
     currentIntensity = 30;
+    // Legacy Suno extension scheduling
     extensionTimer;
-    // Track remaining time for extension scheduling
     remainingTime = 0;
     EXTENSION_THRESHOLD = 15; // seconds
-    // Track generation timing
+    // Generation timer UI
     generationStartTime = 0;
     generationIntervalId;
-    // Debounce extend-on-activity to avoid too many concurrent extensions
-    lastExtendOnActivityTime = 0;
+    // Debounce steering/extend-on-activity
+    lastSteerOrExtendTime = 0;
+    STEER_DEBOUNCE_MS = 2500;
     EXTEND_ON_ACTIVITY_DEBOUNCE_MS = 12000;
-    // Background music cache
+    // Background cache for Suno fallback
     moodCache = new Map();
     pendingGenerations = new Map();
     // Persisted library and project theme (per-workspace)
     library = [];
     projectTheme = null;
+    // Realtime session flags
+    realtimeActive = false;
     constructor(playerProvider, workspaceState) {
         this.playerProvider = playerProvider;
         this.workspaceState = workspaceState;
-        this.client = new SunoClient_1.SunoClient();
+        this.generationEngine = new engine_1.SunoEngineAdapter();
         this.classifier = new MoodClassifier_1.MoodClassifier();
-        console.log('MusicManager: Initialized');
-        // Start background caching for common moods
+        this.lyriaEngine = new engine_1.LyriaEngineAdapter(this.getGeminiApiKey(), this.getLyriaModel(), {
+            onStreamInit: (session) => {
+                this.playerProvider.streamInit({ sessionId: session.sessionId });
+            },
+            onStreamChunk: (chunk) => {
+                this.playerProvider.streamChunk(chunk);
+            },
+            onStreamPause: () => {
+                this.playerProvider.streamPause();
+            },
+            onStreamResume: () => {
+                this.playerProvider.streamResume();
+            },
+            onStreamStop: () => {
+                this.playerProvider.streamStop();
+            },
+            onStreamReset: () => {
+                this.playerProvider.streamReset();
+            },
+            onWarning: (message) => {
+                console.warn('MusicManager[Lyria]:', message);
+            },
+            onError: (message) => {
+                console.error('MusicManager[Lyria] error:', message);
+                this.playerProvider.streamError(message);
+            },
+        });
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('agenticSuno.geminiApiKey') ||
+                event.affectsConfiguration('agenticSuno.lyriaModel')) {
+                this.lyriaEngine.configure(this.getGeminiApiKey(), this.getLyriaModel());
+            }
+        });
+        console.log('MusicManager: Initialized with Suno fallback + Lyria realtime support');
         this.initializeCache();
     }
-    async initializeCache() {
-        // Give extension a moment to start up before hitting API
+    initializeCache() {
+        if (this.selectPreferredEngine() !== 'suno') {
+            console.log('MusicManager: Skipping fallback cache warmup because Lyria is preferred.');
+            return;
+        }
         setTimeout(() => {
-            console.log('MusicManager: Initializing background cache...');
-            // Cache most likely moods first
-            this.generateInBackground('focused');
-            this.generateInBackground('ambient');
+            console.log('MusicManager: Initializing fallback cache...');
+            void this.generateInBackground('focused');
+            void this.generateInBackground('ambient');
         }, 3000);
     }
     async generateInBackground(mood) {
         if (this.pendingGenerations.has(mood))
             return;
-        // Don't cache if we already have tracks
         const cached = this.moodCache.get(mood) || [];
         if (cached.length > 0)
             return;
-        console.log(`MusicManager: Starting background generation for ${mood}`);
         const generationPromise = (async () => {
             try {
-                const prompt = this.getPromptForMood(mood, 30); // Default intensity
-                // Use silent mode to avoid UI spam
-                const result = await this.client.generate(prompt, true, true);
+                const prompt = this.getPromptForMood(mood, 30);
+                const result = await this.generationEngine.generate(prompt, true, true);
                 if (result.tracks && result.tracks.length > 0) {
                     const currentCache = this.moodCache.get(mood) || [];
                     currentCache.push(...result.tracks);
                     this.moodCache.set(mood, currentCache);
-                    console.log(`MusicManager: Cached ${result.tracks.length} tracks for ${mood}`);
                 }
             }
             catch (error) {
-                console.error(`MusicManager: Failed to cache for ${mood}`, error);
+                console.error(`MusicManager: Failed to cache ${mood} fallback tracks`, error);
             }
             finally {
                 this.pendingGenerations.delete(mood);
             }
         })();
         this.pendingGenerations.set(mood, generationPromise);
-        return generationPromise;
+        await generationPromise;
     }
-    /**
-     * Handle incoming agent activity.
-     * Updates mood and, when already playing, extends the song in the new mood direction.
-     */
     handleActivity(activity) {
-        console.log(`MusicManager: Activity received - ${activity.classification.mood} (${activity.classification.intensity})`);
-        // Re-classify from raw text when we have meaningful content (e.g. output channel)
         const classification = activity.rawText.length > 20
             ? this.classifier.classify(activity.rawText)
             : activity.classification;
@@ -6359,73 +6890,67 @@ class MusicManager {
         const prevIntensity = this.currentIntensity;
         this.currentMood = classification.mood;
         this.currentIntensity = classification.intensity;
-        // Update player UI
         this.playerProvider.updateState({
             mood: this.currentMood,
             intensity: this.currentIntensity,
         });
-        // Add to activity feed (use original activity with possibly richer classification)
         this.playerProvider.addActivity({
             ...activity,
             classification,
         });
-        // If we're already playing and mood/intensity changed, extend the song in this direction (debounced)
         const moodOrIntensityChanged = prevMood !== this.currentMood || Math.abs(prevIntensity - this.currentIntensity) > 15;
         const now = Date.now();
-        const debounceOk = now - this.lastExtendOnActivityTime >= this.EXTEND_ON_ACTIVITY_DEBOUNCE_MS;
-        if (this.isPlaying && moodOrIntensityChanged && debounceOk) {
-            this.lastExtendOnActivityTime = now;
-            console.log(`MusicManager: Extending song toward ${this.currentMood} (${this.currentIntensity})`);
-            this.extendFlow();
+        if (this.isPlaying && moodOrIntensityChanged) {
+            if (this.realtimeActive) {
+                const debounceOk = now - this.lastSteerOrExtendTime >= this.STEER_DEBOUNCE_MS;
+                if (debounceOk) {
+                    this.lastSteerOrExtendTime = now;
+                    void this.steerRealtimeSession(activity.rawText);
+                }
+            }
+            else {
+                const debounceOk = now - this.lastSteerOrExtendTime >= this.EXTEND_ON_ACTIVITY_DEBOUNCE_MS;
+                if (debounceOk) {
+                    this.lastSteerOrExtendTime = now;
+                    void this.extendFlow();
+                }
+            }
         }
-        // Check for significant mood transition
-        if (this.classifier.detectMoodTransition(prevMood, this.currentMood)) {
-            console.log(`MusicManager: Significant mood transition ${prevMood} -> ${this.currentMood}`);
-        }
-        // Convert to legacy state and handle
         const legacyState = {
             source: activity.agentType,
-            status: classification.mood === 'ambient' ? 'idle' :
-                classification.mood === 'tense' ? 'error' :
-                    classification.mood === 'triumphant' ? 'success' : 'working',
+            status: classification.mood === 'ambient'
+                ? 'idle'
+                : classification.mood === 'tense'
+                    ? 'error'
+                    : classification.mood === 'triumphant'
+                        ? 'success'
+                        : 'working',
             intensity: Math.round(classification.intensity / 10),
             currentTask: activity.rawText.substring(0, 100),
             mood: classification.mood,
         };
-        this.handleStateChange(legacyState);
+        void this.handleStateChange(legacyState);
     }
-    /**
-     * Handle legacy state changes (backward compatibility)
-     */
     async handleStateChange(newState) {
-        if (this.shouldUpdateMusic(newState)) {
-            console.log(`MusicManager: State changed to ${newState.status} (${newState.intensity})`);
-            this.state = newState;
-            // Update mood if provided
-            if (newState.mood) {
-                this.currentMood = newState.mood;
-            }
-            // If we are idle, maybe pause or switch to ambient
-            if (newState.status === 'idle' && !this.isPlaying) {
-                return; // Stay idle
-            }
-            // If we are working and no music, start
-            if (newState.status === 'working' && !this.currentTrack) {
-                await this.startFlow();
-            }
+        if (!this.shouldUpdateMusic(newState))
+            return;
+        this.state = newState;
+        if (newState.mood) {
+            this.currentMood = newState.mood;
+        }
+        if (newState.status === 'idle' && !this.isPlaying) {
+            return;
+        }
+        if (newState.status === 'working' && !this.isPlaying) {
+            await this.startFlow();
         }
     }
     shouldUpdateMusic(newState) {
         return newState.status !== this.state.status || newState.intensity !== this.state.intensity;
     }
-    /**
-     * Start music as soon as the user sends a message (first activity).
-     * Uses the activity content to set mood and optional prompt hints.
-     */
     async startFlowFromActivity(activity) {
         if (this.isPlaying)
             return;
-        // Classify from chat/activity content for content-driven mood
         const classification = activity.rawText.length > 10
             ? this.classifier.classify(activity.rawText)
             : activity.classification;
@@ -6436,57 +6961,167 @@ class MusicManager {
             intensity: this.currentIntensity,
         });
         this.playerProvider.addActivity({ ...activity, classification });
-        console.log(`MusicManager: Starting from activity - mood=${this.currentMood}, intensity=${this.currentIntensity}`);
         await this.startFlow(activity.rawText);
     }
     async startFlow(customPromptHint) {
         if (this.isPlaying)
             return;
+        const mode = this.selectPreferredEngine();
+        if (mode === 'lyria') {
+            const started = await this.startRealtimeFlow(customPromptHint);
+            if (started) {
+                return;
+            }
+            // When Lyria is configured/present but errors, do not silently switch to Suno.
+            vscode.window.showErrorMessage('AgenticSuno: Lyria failed to start. Check logs and API/model settings.');
+            return;
+        }
+        await this.startSunoFlow(customPromptHint);
+    }
+    startFlowWithImmediatePlayback() {
+        if (this.isPlaying)
+            return;
+        const mode = this.selectPreferredEngine();
+        if (mode === 'lyria') {
+            void this.startFlow();
+            return;
+        }
+        const theme = this.projectTheme;
+        const hasThemeUrl = theme?.track?.audio_url;
+        if (hasThemeUrl) {
+            this.isPlaying = true;
+            this.isPaused = false;
+            this.realtimeActive = false;
+            this.currentMood = theme?.track?.mood ?? 'ambient';
+            this.currentIntensity = 30;
+            this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
+            this.playerProvider.playTrackWhenReady(theme.track?.audio_url ?? '', theme.track?.title ?? 'Project theme', theme?.style ?? theme?.prompt.substring(0, 50), theme?.track?.mood);
+            this.startBackgroundGeneration();
+            return;
+        }
+        this.currentMood = 'focused';
+        this.currentIntensity = 30;
+        this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
+        const mockTrack = this.generationEngine.getMockTrackForMood(this.currentMood);
         this.isPlaying = true;
+        this.isPaused = false;
+        this.realtimeActive = false;
+        this.playerProvider.playTrackWhenReady(mockTrack.audio_url, mockTrack.title ?? `Mock (${this.currentMood})`, String(mockTrack.metadata?.tags ?? this.currentMood), this.currentMood);
+        this.startBackgroundGeneration();
+        void this.getRepositoryMood().then((repoMood) => {
+            this.currentMood = repoMood;
+            this.playerProvider.updateState({ mood: this.currentMood });
+        });
+    }
+    async startRealtimeFlow(customPromptHint, preset) {
+        this.lyriaEngine.configure(this.getGeminiApiKey(), this.getLyriaModel());
+        const apiKey = this.getGeminiApiKey();
+        if (!apiKey) {
+            return false;
+        }
+        try {
+            this.startGenerationTimer();
+            this.stopExtensionScheduler();
+            this.queue = [];
+            this.currentTrack = undefined;
+            const steering = await this.buildRealtimeSteering(customPromptHint, preset);
+            await this.lyriaEngine.startSession(steering.prompts, steering.config);
+            this.stopGenerationTimer();
+            this.showGenerationMetrics({
+                requestStartTime: this.generationStartTime,
+                completionTime: Date.now(),
+                elapsedMs: Date.now() - this.generationStartTime,
+                pollAttempts: 1,
+            });
+            this.isPlaying = true;
+            this.isPaused = false;
+            this.realtimeActive = true;
+            this.upsertRealtimeProjectTheme(steering.prompt, steering.prompts, steering.config);
+            this.addRealtimePresetToLibrary(steering.prompt, steering.prompts, steering.config);
+            return true;
+        }
+        catch (error) {
+            this.stopGenerationTimer();
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('MusicManager: Failed to start Lyria realtime, using Suno fallback:', message);
+            this.playerProvider.streamError(`Lyria start failed: ${message}`);
+            this.realtimeActive = false;
+            this.isPlaying = false;
+            this.isPaused = false;
+            return false;
+        }
+    }
+    async steerRealtimeSession(customPromptHint) {
+        if (!this.realtimeActive || !this.isPlaying)
+            return;
+        try {
+            const steering = await this.buildRealtimeSteering(customPromptHint);
+            await this.lyriaEngine.steer(steering.prompts, steering.config);
+            this.upsertRealtimeProjectTheme(steering.prompt, steering.prompts, steering.config);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('MusicManager: Realtime steering failed:', message);
+            this.playerProvider.streamError(`Lyria steer failed: ${message}`);
+        }
+    }
+    async buildRealtimeSteering(customPromptHint, preset) {
+        const projectThemePrompt = this.projectTheme?.prompt ?? await this.deriveProjectThemePrompt() ?? undefined;
+        const prompt = this.blendContentHint(this.getPromptForMood(this.currentMood, this.currentIntensity), customPromptHint);
+        const prompts = preset?.prompts ?? (0, LyriaSteering_1.buildWeightedPrompts)({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+            promptHint: customPromptHint,
+            projectThemePrompt,
+            styleAnchor: this.getLyriaStyleAnchor(),
+        });
+        const config = preset?.config ?? this.projectTheme?.generationConfig ?? (0, LyriaSteering_1.buildGenerationConfig)({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+        });
+        return { prompt, prompts, config };
+    }
+    async startSunoFlow(customPromptHint) {
+        if (this.isPlaying)
+            return;
+        this.isPlaying = true;
+        this.isPaused = false;
+        this.realtimeActive = false;
         try {
             const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
-            console.log(`MusicManager: Generating music - mood=${this.currentMood}, intensity=${this.currentIntensity}`);
-            // Check cache first!
             let cachedTracks = this.moodCache.get(this.currentMood);
-            // If cache is empty but we have a pending generation, wait for it!
             if ((!cachedTracks || cachedTracks.length === 0) && this.pendingGenerations.has(this.currentMood)) {
-                console.log(`MusicManager: Waiting for background generation to complete for ${this.currentMood}...`);
-                vscode.window.setStatusBarMessage(`AgenticSuno: Waiting for background generation...`, 3000);
-                try {
-                    await this.pendingGenerations.get(this.currentMood);
-                    // Refresh cache check
-                    cachedTracks = this.moodCache.get(this.currentMood);
-                }
-                catch (e) {
-                    console.error('MusicManager: Error waiting for background generation', e);
-                }
+                await this.pendingGenerations.get(this.currentMood);
+                cachedTracks = this.moodCache.get(this.currentMood);
             }
             if (cachedTracks && cachedTracks.length > 0) {
-                console.log(`MusicManager: Cache HIT for ${this.currentMood}`);
                 const track = cachedTracks.shift();
-                this.moodCache.set(this.currentMood, cachedTracks); // Update cache
+                this.moodCache.set(this.currentMood, cachedTracks);
                 if (track) {
                     this.queue.push(track);
-                    this.addToLibrary(track, { prompt, style: this.getPromptForMood(this.currentMood, this.currentIntensity) });
+                    this.addToLibrary(track, {
+                        prompt,
+                        style: this.getPromptForMood(this.currentMood, this.currentIntensity),
+                        engine: 'suno',
+                    });
                     this.playNext();
                     this.startExtensionScheduler();
-                    // Replenish cache in background
-                    this.generateInBackground(this.currentMood);
+                    void this.generateInBackground(this.currentMood);
                     return;
                 }
             }
-            console.log(`MusicManager: Cache MISS for ${this.currentMood}, generating live`);
-            vscode.window.showInformationMessage(`AgenticSuno: Generating ${this.currentMood} music...`);
-            // Start the generation timer UI
             this.startGenerationTimer();
             const finalPrompt = this.blendContentHint(prompt, customPromptHint);
-            const result = await this.client.generate(finalPrompt);
-            // Stop timer and show results
+            const result = await this.generationEngine.generate(finalPrompt);
             this.stopGenerationTimer();
             this.showGenerationMetrics(result.metrics);
             if (result.tracks && result.tracks.length > 0) {
                 for (const t of result.tracks) {
-                    this.addToLibrary(t, { prompt: finalPrompt, style: this.getPromptForMood(this.currentMood, this.currentIntensity) });
+                    this.addToLibrary(t, {
+                        prompt: finalPrompt,
+                        style: this.getPromptForMood(this.currentMood, this.currentIntensity),
+                        engine: 'suno',
+                    });
                 }
                 this.queue.push(...result.tracks);
                 this.playNext();
@@ -6494,118 +7129,116 @@ class MusicManager {
             }
         }
         catch (error) {
-            console.error('MusicManager: Generation error:', error);
+            console.error('MusicManager: Suno fallback generation error:', error);
             this.stopGenerationTimer();
-            vscode.window.showErrorMessage('AgenticSuno: Failed to generate music.');
+            vscode.window.showErrorMessage('AgenticSuno: Failed to generate fallback music.');
             this.isPlaying = false;
+            this.isPaused = false;
         }
-    }
-    /**
-     * Start playback immediately with theme or default-mood mock, then start generation in background.
-     * Both run in the same tick (no await). When generation reaches FIRST_SUCCESS, switch to generated track.
-     */
-    startFlowWithImmediatePlayback() {
-        if (this.isPlaying)
-            return;
-        const theme = this.projectTheme;
-        const hasThemeUrl = theme?.track?.audio_url;
-        if (hasThemeUrl) {
-            this.isPlaying = true;
-            this.currentMood = theme.track.mood ?? 'ambient';
-            this.currentIntensity = 30;
-            this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
-            this.playerProvider.playTrackWhenReady(theme.track.audio_url, theme.track.title ?? 'Project theme', theme.style ?? theme.prompt.substring(0, 50), theme.track.mood);
-            console.log('MusicManager: Immediate playback - project theme');
-            this.startBackgroundGeneration();
-        }
-        else {
-            this.currentMood = 'focused';
-            this.currentIntensity = 30;
-            this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
-            const mockTrack = this.client.getMockTrackForMood(this.currentMood);
-            this.isPlaying = true;
-            this.playerProvider.playTrackWhenReady(mockTrack.audio_url, mockTrack.title ?? `Mock (${this.currentMood})`, String(mockTrack.metadata?.tags ?? this.currentMood), this.currentMood);
-            console.log(`MusicManager: Immediate playback - mock (${this.currentMood})`);
-            this.startBackgroundGeneration();
-        }
-        void this.getRepositoryMood().then((repoMood) => {
-            this.currentMood = repoMood;
-            this.playerProvider.updateState({ mood: this.currentMood });
-        }).catch(() => { });
     }
     startBackgroundGeneration() {
         this.startGenerationTimer();
         const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
-        this.client.generate(prompt).then((result) => {
-            if (!this.isPlaying)
+        this.generationEngine.generate(prompt).then((result) => {
+            if (!this.isPlaying || this.realtimeActive)
                 return;
             this.stopGenerationTimer();
             this.showGenerationMetrics(result.metrics);
             if (result.tracks && result.tracks.length > 0) {
                 const style = this.getPromptForMood(this.currentMood, this.currentIntensity);
                 for (const t of result.tracks) {
-                    this.addToLibrary(t, { prompt, style });
+                    this.addToLibrary(t, { prompt, style, engine: 'suno' });
                 }
                 this.queue.push(...result.tracks);
                 this.currentTrack = result.tracks[0];
                 const first = result.tracks[0];
                 this.playerProvider.playTrack(first.audio_url, first.title ?? 'Generated Track', style, this.currentMood);
                 this.startExtensionScheduler();
-                console.log('MusicManager: Switched to generated track');
             }
         }).catch((error) => {
             console.error('MusicManager: Background generation error:', error);
             this.stopGenerationTimer();
             vscode.window.showErrorMessage('AgenticSuno: Failed to generate music.');
             this.isPlaying = false;
+            this.isPaused = false;
             this.playerProvider.stop();
         });
     }
     stop() {
         this.isPlaying = false;
+        this.isPaused = false;
         this.queue = [];
         this.currentTrack = undefined;
         this.stopExtensionScheduler();
+        if (this.realtimeActive) {
+            this.realtimeActive = false;
+            void this.lyriaEngine.stop();
+            this.playerProvider.streamStop();
+        }
         this.playerProvider.stop();
     }
     pause() {
-        this.playerProvider.pause();
+        if (!this.isPlaying || this.isPaused)
+            return;
+        this.isPaused = true;
+        if (this.realtimeActive) {
+            void this.lyriaEngine.pause();
+            this.playerProvider.streamPause();
+        }
+        else {
+            this.playerProvider.pause();
+        }
     }
     resume() {
-        this.playerProvider.resume();
+        if (!this.isPlaying || !this.isPaused)
+            return;
+        this.isPaused = false;
+        if (this.realtimeActive) {
+            void this.lyriaEngine.resume();
+            this.playerProvider.streamResume();
+        }
+        else {
+            this.playerProvider.resume();
+        }
     }
     async skip() {
+        if (!this.isPlaying)
+            return;
+        if (this.realtimeActive) {
+            const steering = await this.buildRealtimeSteering();
+            await this.lyriaEngine.skip(steering.prompts, steering.config);
+            return;
+        }
         if (this.queue.length > 0) {
             this.playNext();
         }
         else {
-            // Generate new track
             await this.extendFlow();
+            this.playNext();
         }
     }
-    updateTimeRemaining(currentTime, duration, remaining) {
+    updateTimeRemaining(_currentTime, _duration, remaining) {
         this.remainingTime = remaining;
     }
-    async playNext() {
-        if (this.queue.length === 0)
+    playNext() {
+        if (this.realtimeActive || this.queue.length === 0)
             return;
         this.currentTrack = this.queue.shift();
         if (this.currentTrack) {
-            console.log(`MusicManager: Playing track ${this.currentTrack.title || this.currentTrack.id}`);
             this.playerProvider.playTrack(this.currentTrack.audio_url, this.currentTrack.title || 'Generated Track', this.currentTrack.metadata?.tags || this.getPromptForMood(this.currentMood, this.currentIntensity), this.currentMood);
         }
-        // Prefetch next track if queue is getting low
         if (this.queue.length < 2) {
-            this.extendFlow();
+            void this.extendFlow();
         }
     }
     startExtensionScheduler() {
-        // Check every 5 seconds if we need to extend
+        this.stopExtensionScheduler();
         this.extensionTimer = setInterval(() => {
+            if (this.realtimeActive)
+                return;
             if (this.remainingTime > 0 && this.remainingTime < this.EXTENSION_THRESHOLD) {
                 if (this.queue.length === 0) {
-                    console.log('MusicManager: Extension threshold reached, generating more...');
-                    this.extendFlow();
+                    void this.extendFlow();
                 }
             }
         }, 5000);
@@ -6617,21 +7250,18 @@ class MusicManager {
         }
     }
     async extendFlow() {
-        if (!this.currentTrack)
+        if (this.realtimeActive || !this.currentTrack)
             return;
         try {
-            // Use mood-appropriate prompt for extension
             const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
-            console.log(`MusicManager: Extending flow with mood=${this.currentMood}`);
-            // Start timer for extension
             this.startGenerationTimer();
-            const result = await this.client.extend(this.currentTrack.id, prompt);
+            const result = await this.generationEngine.extend(this.currentTrack.id, prompt);
             this.stopGenerationTimer();
             this.showGenerationMetrics(result.metrics);
             if (result.tracks && result.tracks.length > 0) {
                 const style = this.getPromptForMood(this.currentMood, this.currentIntensity);
                 for (const t of result.tracks) {
-                    this.addToLibrary(t, { prompt: prompt, style });
+                    this.addToLibrary(t, { prompt, style, engine: 'suno' });
                 }
                 this.queue.push(...result.tracks);
             }
@@ -6639,66 +7269,47 @@ class MusicManager {
         catch (error) {
             console.error('MusicManager: Extension error:', error);
             this.stopGenerationTimer();
-            // Fall back to generating new track
             try {
-                const result = await this.client.generate(this.getPromptForMood(this.currentMood, this.currentIntensity));
+                const result = await this.generationEngine.generate(this.getPromptForMood(this.currentMood, this.currentIntensity));
                 if (result.tracks && result.tracks.length > 0) {
                     this.queue.push(...result.tracks);
                 }
             }
-            catch (e) {
-                console.error('MusicManager: Fallback generation also failed:', e);
+            catch (fallbackError) {
+                console.error('MusicManager: Fallback extension generation failed:', fallbackError);
             }
         }
     }
-    /**
-     * Start the generation timer in the UI
-     */
     startGenerationTimer() {
+        this.stopGenerationTimer();
         this.generationStartTime = Date.now();
         this.playerProvider.showGenerating(0);
-        // Update timer every second
         this.generationIntervalId = setInterval(() => {
             const elapsedSeconds = Math.floor((Date.now() - this.generationStartTime) / 1000);
             this.playerProvider.showGenerating(elapsedSeconds);
         }, 1000);
     }
-    /**
-     * Stop the generation timer
-     */
     stopGenerationTimer() {
         if (this.generationIntervalId) {
             clearInterval(this.generationIntervalId);
             this.generationIntervalId = undefined;
         }
     }
-    /**
-     * Display generation metrics to user
-     */
     showGenerationMetrics(metrics) {
         const seconds = (metrics.elapsedMs / 1000).toFixed(1);
-        console.log(`MusicManager: Generation took ${seconds}s (${metrics.pollAttempts} poll attempts)`);
-        vscode.window.showInformationMessage(`AgenticSuno: Music ready in ${seconds}s`);
+        vscode.window.setStatusBarMessage(`AgenticSuno: Music ready in ${seconds}s`, 2500);
         this.playerProvider.showGenerationComplete(parseFloat(seconds));
     }
-    /**
-     * Blend optional content hint (e.g. from chat) into the mood prompt for more relevant music.
-     */
     blendContentHint(basePrompt, contentHint) {
         if (!contentHint || contentHint.length < 5)
             return basePrompt;
-        // Take a short, sanitized slice to avoid API limits and noise
         const sanitized = contentHint.replace(/\s+/g, ' ').trim().substring(0, 80);
         if (sanitized.length < 5)
             return basePrompt;
         return `${basePrompt}, inspired by: ${sanitized}`;
     }
-    /**
-     * Generate prompt based on mood and intensity
-     */
     getPromptForMood(mood, intensity) {
         const config = vscode.workspace.getConfiguration('agenticSuno');
-        // Base prompts by mood
         const moodPrompts = {
             epic: 'epic orchestral, cinematic, powerful, heroic, dramatic',
             tense: 'dark ambient, tension, suspense, ominous, brooding',
@@ -6707,7 +7318,6 @@ class MusicManager {
             ambient: 'ambient, calm, minimal, atmospheric, peaceful',
         };
         let prompt = moodPrompts[mood];
-        // Adjust for intensity
         if (intensity > 70) {
             prompt += ', fast tempo, intense, energetic';
         }
@@ -6717,17 +7327,8 @@ class MusicManager {
         else if (intensity < 30) {
             prompt += ', slow tempo, gentle, soft';
         }
-        // Add instrumental flag
         prompt += ', instrumental';
         return prompt;
-    }
-    /**
-     * Legacy method for getting prompt based on AgentState
-     */
-    getPromptForState(state) {
-        const mood = state.mood || 'focused';
-        const intensity = (state.intensity || 5) * 10;
-        return this.getPromptForMood(mood, intensity);
     }
     getCurrentMood() {
         return this.currentMood;
@@ -6736,21 +7337,17 @@ class MusicManager {
         return this.isPlaying;
     }
     // ---------- Persisted library & project theme ----------
-    /**
-     * Load library and project theme from workspace state. Call once on activate.
-     */
     loadPersistedLibrary() {
         try {
             const rawLibrary = this.workspaceState.get(WORKSPACE_STATE_KEY_LIBRARY);
             this.library = Array.isArray(rawLibrary) ? rawLibrary : [];
             const rawTheme = this.workspaceState.get(WORKSPACE_STATE_KEY_PROJECT_THEME);
             this.projectTheme = rawTheme && typeof rawTheme.prompt === 'string' ? rawTheme : null;
-            console.log(`MusicManager: Loaded ${this.library.length} library tracks, projectTheme=${!!this.projectTheme}`);
             this.playerProvider.setLibrary(this.library);
             this.playerProvider.setProjectThemeAvailable(!!this.projectTheme);
         }
-        catch (e) {
-            console.error('MusicManager: loadPersistedLibrary error', e);
+        catch (error) {
+            console.error('MusicManager: loadPersistedLibrary error', error);
         }
     }
     getProjectTheme() {
@@ -6768,9 +7365,29 @@ class MusicManager {
             generatedAt: Date.now(),
             prompt,
             style,
+            engine: 'suno',
         };
-        this.projectTheme = { track: persisted, prompt, style, generatedAt: persisted.generatedAt };
-        this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
+        this.projectTheme = {
+            track: persisted,
+            prompt,
+            style,
+            generatedAt: persisted.generatedAt,
+            engine: 'suno',
+        };
+        void this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
+        this.playerProvider.setProjectThemeAvailable(true);
+    }
+    upsertRealtimeProjectTheme(prompt, weightedPrompts, generationConfig) {
+        this.projectTheme = {
+            ...this.projectTheme,
+            prompt,
+            style: this.projectTheme?.style ?? 'Lyria realtime preset',
+            generatedAt: Date.now(),
+            engine: 'lyria',
+            weightedPrompts,
+            generationConfig,
+        };
+        void this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
         this.playerProvider.setProjectThemeAvailable(true);
     }
     addToLibrary(track, options) {
@@ -6782,6 +7399,35 @@ class MusicManager {
             generatedAt: Date.now(),
             prompt: options?.prompt,
             style: options?.style,
+            engine: options?.engine ?? 'suno',
+            weightedPrompts: options?.weightedPrompts,
+            generationConfig: options?.generationConfig,
+        };
+        this.library.unshift(persisted);
+        if (this.library.length > LIBRARY_MAX_TRACKS) {
+            this.library = this.library.slice(0, LIBRARY_MAX_TRACKS);
+        }
+        this.persistLibrary();
+        this.playerProvider.setLibrary(this.library);
+    }
+    addRealtimePresetToLibrary(prompt, weightedPrompts, generationConfig) {
+        const newest = this.library[0];
+        if (newest &&
+            newest.engine === 'lyria' &&
+            newest.prompt === prompt &&
+            Date.now() - newest.generatedAt < 120000) {
+            return;
+        }
+        const persisted = {
+            id: `lyria-${Date.now()}`,
+            title: `Lyria preset (${this.currentMood})`,
+            mood: this.currentMood,
+            generatedAt: Date.now(),
+            prompt,
+            style: 'Realtime preset',
+            engine: 'lyria',
+            weightedPrompts,
+            generationConfig,
         };
         this.library.unshift(persisted);
         if (this.library.length > LIBRARY_MAX_TRACKS) {
@@ -6792,86 +7438,85 @@ class MusicManager {
     }
     persistLibrary() {
         try {
-            this.workspaceState.update(WORKSPACE_STATE_KEY_LIBRARY, this.library);
+            void this.workspaceState.update(WORKSPACE_STATE_KEY_LIBRARY, this.library);
         }
-        catch (e) {
-            console.error('MusicManager: persistLibrary error', e);
+        catch (error) {
+            console.error('MusicManager: persistLibrary error', error);
         }
     }
-    /**
-     * Aggregated repo text from README, spec/, package.json (for theme prompt or mood classification).
-     */
     async getRepositoryText() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder)
             return null;
         const parts = [];
-        const repoName = folder.name;
-        if (repoName) {
-            parts.push(`Instrumental theme for a project named ${repoName}, ambient, modern`);
+        if (folder.name) {
+            parts.push(`Instrumental theme for project ${folder.name}`);
         }
         try {
             const readmeUri = vscode.Uri.joinPath(folder.uri, 'README.md');
             const readmeData = await Promise.resolve(vscode.workspace.fs.readFile(readmeUri)).catch(() => null);
             if (readmeData) {
-                const text = Buffer.from(readmeData).toString('utf8')
+                const text = Buffer.from(readmeData)
+                    .toString('utf8')
                     .replace(/#+/g, ' ')
                     .replace(/\s+/g, ' ')
                     .trim()
                     .substring(0, 300);
-                if (text.length > 20)
+                if (text.length > 20) {
                     parts.push(text);
+                }
             }
         }
-        catch { /* ignore */ }
+        catch {
+            // ignore
+        }
         const specFiles = ['spec/intent.md', 'spec/requirements.md', 'spec/design.md'];
         for (const rel of specFiles) {
             try {
                 const uri = vscode.Uri.joinPath(folder.uri, rel);
                 const data = await Promise.resolve(vscode.workspace.fs.readFile(uri)).catch(() => null);
                 if (data) {
-                    const text = Buffer.from(data).toString('utf8')
+                    const text = Buffer.from(data)
+                        .toString('utf8')
                         .replace(/#+/g, ' ')
                         .replace(/\s+/g, ' ')
                         .trim()
                         .substring(0, 200);
-                    if (text.length > 15)
+                    if (text.length > 15) {
                         parts.push(text);
-                    break; // one spec file is enough
+                    }
+                    break;
                 }
             }
-            catch { /* ignore */ }
+            catch {
+                // ignore
+            }
         }
         try {
             const pkgUri = vscode.Uri.joinPath(folder.uri, 'package.json');
             const data = await Promise.resolve(vscode.workspace.fs.readFile(pkgUri)).catch(() => null);
             if (data) {
                 const json = JSON.parse(Buffer.from(data).toString('utf8'));
-                const name = json?.name;
-                const desc = json?.description;
-                if (name)
-                    parts.push(`Project: ${name}`);
-                if (desc && typeof desc === 'string')
-                    parts.push(desc.substring(0, 120));
+                if (json?.name)
+                    parts.push(`Project: ${json.name}`);
+                if (typeof json?.description === 'string') {
+                    parts.push(json.description.substring(0, 120));
+                }
             }
         }
-        catch { /* ignore */ }
+        catch {
+            // ignore
+        }
         if (parts.length === 0)
             return null;
         return parts.join('. ').substring(0, PROJECT_THEME_PROMPT_MAX_CHARS);
     }
-    /**
-     * Derive a project-theme prompt from repo name, README, spec/, package.json.
-     */
     async deriveProjectThemePrompt() {
         const combined = await this.getRepositoryText();
         if (!combined)
             return null;
-        return combined + ', instrumental';
+        return `${combined}, instrumental`;
     }
-    /**
-     * Classify repository mood from README, spec, package.json for mock track selection.
-     */
     async getRepositoryMood() {
         const text = await this.getRepositoryText();
         if (!text || text.length < 10)
@@ -6879,66 +7524,81 @@ class MusicManager {
         const classification = this.classifier.classify(text);
         return classification.mood;
     }
-    /**
-     * Ensure project theme exists (lazy). Call when user opens player or first Play. No-op if no workspace or no prompt.
-     */
     async ensureProjectTheme() {
-        if (this.projectTheme?.track)
-            return; // already have a theme track
-        const prompt = this.projectTheme?.prompt ?? await this.deriveProjectThemePrompt();
-        if (!prompt) {
-            console.log('MusicManager: No project theme prompt (no workspace or no content)');
+        if (this.projectTheme?.prompt) {
+            this.playerProvider.setProjectThemeAvailable(true);
             return;
         }
-        try {
-            console.log('MusicManager: Generating project theme...');
-            this.playerProvider.showGenerating(0);
-            const result = await this.client.generate(prompt, true, true);
-            if (result.tracks && result.tracks.length > 0) {
-                const track = result.tracks[0];
-                this.setProjectTheme(track, prompt);
-                this.addToLibrary(track, { prompt });
-                this.playerProvider.setLibrary(this.library);
+        const prompt = await this.deriveProjectThemePrompt();
+        if (!prompt)
+            return;
+        this.projectTheme = {
+            prompt,
+            style: 'Workspace-derived theme',
+            generatedAt: Date.now(),
+            engine: this.selectPreferredEngine() === 'lyria' ? 'lyria' : 'suno',
+        };
+        await this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
+        this.playerProvider.setProjectThemeAvailable(true);
+        if (this.projectTheme.engine === 'suno') {
+            try {
+                const result = await this.generationEngine.generate(prompt, true, true);
+                if (result.tracks && result.tracks.length > 0) {
+                    const track = result.tracks[0];
+                    this.setProjectTheme(track, prompt);
+                    this.addToLibrary(track, { prompt, engine: 'suno' });
+                }
+            }
+            catch (error) {
+                console.error('MusicManager: ensureProjectTheme generation error', error);
             }
         }
-        catch (e) {
-            console.error('MusicManager: ensureProjectTheme error', e);
-        }
     }
-    /**
-     * Play project theme (stored track or regenerate from prompt). Falls back to starting normal flow if no theme.
-     */
     async playProjectTheme() {
         if (this.isPlaying)
             return;
         const theme = this.projectTheme;
+        if (this.selectPreferredEngine() === 'lyria') {
+            const started = await this.startRealtimeFlow(theme?.prompt, {
+                prompts: theme?.weightedPrompts,
+                config: theme?.generationConfig,
+            });
+            if (started) {
+                return;
+            }
+            vscode.window.showErrorMessage('AgenticSuno: Lyria failed to start. Check logs and API/model settings.');
+            return;
+        }
         if (theme?.track?.audio_url) {
             this.isPlaying = true;
+            this.realtimeActive = false;
+            this.isPaused = false;
             this.currentMood = theme.track.mood ?? 'ambient';
             this.playerProvider.updateState({ mood: this.currentMood });
             this.playerProvider.playTrack(theme.track.audio_url, theme.track.title ?? 'Project theme', theme.style ?? theme.prompt.substring(0, 50), theme.track.mood);
             return;
         }
-        if (theme?.prompt) {
-            await this.ensureProjectTheme();
-            if (this.projectTheme?.track) {
-                await this.playProjectTheme();
-                return;
-            }
-        }
-        // No theme: start normal flow (will use mock if no API key)
-        await this.startFlow();
+        await this.startFlow(theme?.prompt);
     }
-    /**
-     * Play a track from the library by index.
-     */
     playLibraryTrack(index) {
         const track = this.library[index];
         if (!track)
             return;
-        if (this.isPlaying)
+        if (this.isPlaying) {
             this.stop();
+        }
+        if (track.engine === 'lyria' || !track.audio_url) {
+            this.currentMood = track.mood ?? this.currentMood;
+            this.currentIntensity = 40;
+            void this.startRealtimeFlow(track.prompt, {
+                prompts: track.weightedPrompts,
+                config: track.generationConfig,
+            });
+            return;
+        }
         this.isPlaying = true;
+        this.isPaused = false;
+        this.realtimeActive = false;
         this.currentMood = track.mood ?? 'ambient';
         this.currentTrack = {
             id: track.id,
@@ -6949,8 +7609,220 @@ class MusicManager {
         this.playerProvider.updateState({ mood: this.currentMood });
         this.playerProvider.playTrack(track.audio_url, track.title ?? 'Library track', track.style ?? track.prompt?.substring(0, 50) ?? '', track.mood);
     }
+    selectPreferredEngine() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        const preference = config.get('engine') ?? 'auto';
+        if (preference === 'suno') {
+            return 'suno';
+        }
+        const hasGeminiKey = this.getGeminiApiKey().length > 0;
+        if (preference === 'lyria') {
+            if (!hasGeminiKey) {
+                vscode.window.setStatusBarMessage('AgenticSuno: geminiApiKey missing, falling back to Suno/mock.', 3000);
+                return 'suno';
+            }
+            return 'lyria';
+        }
+        return hasGeminiKey ? 'lyria' : 'suno';
+    }
+    getGeminiApiKey() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        return (config.get('geminiApiKey') || '').trim();
+    }
+    getLyriaModel() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        return (config.get('lyriaModel') || 'models/lyria-realtime-exp').trim();
+    }
+    getLyriaStyleAnchor() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        return (config.get('lyriaStyleAnchor') || '').trim();
+    }
+    dispose() {
+        this.stop();
+        this.lyriaEngine.dispose();
+    }
 }
 exports.MusicManager = MusicManager;
+
+
+/***/ },
+
+/***/ "./src/music/engine/LyriaEngineAdapter.ts"
+/*!************************************************!*\
+  !*** ./src/music/engine/LyriaEngineAdapter.ts ***!
+  \************************************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LyriaEngineAdapter = void 0;
+const LyriaClient_1 = __webpack_require__(/*! ../../lyria/LyriaClient */ "./src/lyria/LyriaClient.ts");
+/**
+ * High-level Lyria control wrapper used by MusicManager.
+ */
+class LyriaEngineAdapter {
+    callbacks;
+    client;
+    unsubscribers = [];
+    lastPrompts = [];
+    lastConfig = {};
+    wantsPlayback = false;
+    constructor(apiKey, model, callbacks) {
+        this.callbacks = callbacks;
+        this.client = new LyriaClient_1.LyriaClient({ apiKey, model });
+        this.bindClientEvents();
+    }
+    configure(apiKey, model) {
+        this.client.updateOptions({ apiKey, model });
+    }
+    async startSession(prompts, config) {
+        this.lastPrompts = prompts;
+        this.lastConfig = config;
+        this.wantsPlayback = true;
+        await this.client.connect();
+        await this.client.setWeightedPrompts(prompts);
+        await this.client.setGenerationConfig(config);
+        this.client.play();
+        this.callbacks.onStreamResume();
+    }
+    async steer(prompts, config) {
+        this.lastPrompts = prompts;
+        this.lastConfig = config;
+        await this.client.connect();
+        await this.client.setWeightedPrompts(prompts);
+        await this.client.setGenerationConfig(config);
+    }
+    async skip(prompts, config) {
+        this.lastPrompts = prompts;
+        this.lastConfig = config;
+        await this.client.connect();
+        this.client.resetContext();
+        await this.client.setWeightedPrompts(prompts);
+        await this.client.setGenerationConfig(config);
+        this.client.play();
+        this.callbacks.onStreamReset();
+    }
+    async pause() {
+        this.wantsPlayback = false;
+        await this.client.connect();
+        this.client.pause();
+        this.callbacks.onStreamPause();
+    }
+    async resume() {
+        this.wantsPlayback = true;
+        await this.client.connect();
+        this.client.play();
+        this.callbacks.onStreamResume();
+    }
+    async stop() {
+        this.wantsPlayback = false;
+        const session = this.client.getSessionInfo();
+        if (session) {
+            this.client.stop();
+        }
+        this.callbacks.onStreamStop();
+    }
+    dispose() {
+        this.wantsPlayback = false;
+        for (const unsubscribe of this.unsubscribers) {
+            unsubscribe();
+        }
+        this.unsubscribers.length = 0;
+        this.client.disconnect();
+    }
+    bindClientEvents() {
+        this.unsubscribers.push(this.client.onConnected(async (session) => {
+            this.callbacks.onStreamInit(session);
+            // Rehydrate steering state after reconnect.
+            if (this.lastPrompts.length > 0) {
+                try {
+                    await this.client.setWeightedPrompts(this.lastPrompts);
+                    await this.client.setGenerationConfig(this.lastConfig);
+                    if (this.wantsPlayback) {
+                        this.client.play();
+                        this.callbacks.onStreamResume();
+                    }
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    this.callbacks.onError(`Failed to restore Lyria state after reconnect: ${message}`, true);
+                }
+            }
+        }));
+        this.unsubscribers.push(this.client.onAudioChunk((chunk) => {
+            this.callbacks.onStreamChunk(chunk);
+        }));
+        this.unsubscribers.push(this.client.onWarning((warning) => {
+            this.callbacks.onWarning(warning);
+        }));
+        this.unsubscribers.push(this.client.onFilteredPrompt((message) => {
+            this.callbacks.onWarning(`Filtered prompt by server: ${message}`);
+        }));
+        this.unsubscribers.push(this.client.onDisconnected(({ willReconnect, code }) => {
+            if (!willReconnect && code !== 1000) {
+                this.callbacks.onError('Lyria session disconnected and reconnect budget was exhausted.', true);
+            }
+        }));
+        this.unsubscribers.push(this.client.onError((error) => {
+            this.callbacks.onError(error.message, true);
+        }));
+    }
+}
+exports.LyriaEngineAdapter = LyriaEngineAdapter;
+
+
+/***/ },
+
+/***/ "./src/music/engine/SunoEngineAdapter.ts"
+/*!***********************************************!*\
+  !*** ./src/music/engine/SunoEngineAdapter.ts ***!
+  \***********************************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SunoEngineAdapter = void 0;
+const SunoClient_1 = __webpack_require__(/*! ../../suno/SunoClient */ "./src/suno/SunoClient.ts");
+/**
+ * Adapter that exposes SunoClient via the engine contract.
+ */
+class SunoEngineAdapter {
+    client;
+    id = 'suno';
+    constructor(client = new SunoClient_1.SunoClient()) {
+        this.client = client;
+    }
+    generate(prompt, instrumental, silent) {
+        return this.client.generate(prompt, instrumental, silent);
+    }
+    extend(audioId, prompt, continueAt) {
+        return this.client.extend(audioId, prompt, continueAt);
+    }
+    getMockTrackForMood(mood) {
+        return this.client.getMockTrackForMood(mood);
+    }
+}
+exports.SunoEngineAdapter = SunoEngineAdapter;
+
+
+/***/ },
+
+/***/ "./src/music/engine/index.ts"
+/*!***********************************!*\
+  !*** ./src/music/engine/index.ts ***!
+  \***********************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LyriaEngineAdapter = exports.SunoEngineAdapter = void 0;
+var SunoEngineAdapter_1 = __webpack_require__(/*! ./SunoEngineAdapter */ "./src/music/engine/SunoEngineAdapter.ts");
+Object.defineProperty(exports, "SunoEngineAdapter", ({ enumerable: true, get: function () { return SunoEngineAdapter_1.SunoEngineAdapter; } }));
+var LyriaEngineAdapter_1 = __webpack_require__(/*! ./LyriaEngineAdapter */ "./src/music/engine/LyriaEngineAdapter.ts");
+Object.defineProperty(exports, "LyriaEngineAdapter", ({ enumerable: true, get: function () { return LyriaEngineAdapter_1.LyriaEngineAdapter; } }));
 
 
 /***/ },
@@ -7344,6 +8216,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PlayerViewProvider = void 0;
 const vscode = __importStar(__webpack_require__(/*! vscode */ "vscode"));
+const MAX_PENDING_MESSAGES = 512;
+const MAX_CHUNK_BASE64_LENGTH = 1_500_000;
 class PlayerViewProvider {
     _extensionUri;
     _onTimeUpdate;
@@ -7351,26 +8225,24 @@ class PlayerViewProvider {
     static viewType = 'agenticSuno.player';
     _view;
     _webviewReady = false;
-    _pendingPlay;
+    _pendingMessages = [];
     constructor(_extensionUri, _onTimeUpdate, _onTrackEnded) {
         this._extensionUri = _extensionUri;
         this._onTimeUpdate = _onTimeUpdate;
         this._onTrackEnded = _onTrackEnded;
     }
-    resolveWebviewView(webviewView, context, _token) {
+    resolveWebviewView(webviewView, _context, _token) {
         console.log('PlayerViewProvider: resolveWebviewView called');
         this._view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [
-                this._extensionUri
-            ]
+            localResourceRoots: [this._extensionUri],
         };
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-        webviewView.webview.onDidReceiveMessage(data => {
+        webviewView.webview.onDidReceiveMessage((data) => {
             switch (data.type) {
                 case 'timeUpdate':
-                    this._onTimeUpdate(data.currentTime, data.duration, data.remainingTime);
+                    this._onTimeUpdate(Number(data.currentTime || 0), Number(data.duration || 0), Number(data.remainingTime || 0));
                     break;
                 case 'ended':
                     this._onTrackEnded();
@@ -7382,145 +8254,148 @@ class PlayerViewProvider {
                     console.error('Webview Error:', data.message);
                     break;
                 case 'skip':
-                    vscode.commands.executeCommand('agenticSuno.skip');
+                    void vscode.commands.executeCommand('agenticSuno.skip');
                     break;
                 case 'playProjectTheme':
-                    vscode.commands.executeCommand('agenticSuno.playProjectTheme');
+                    void vscode.commands.executeCommand('agenticSuno.playProjectTheme');
                     break;
                 case 'startOrResume':
-                    vscode.commands.executeCommand('agenticSuno.start');
+                    void vscode.commands.executeCommand('agenticSuno.start');
+                    break;
+                case 'pause':
+                    void vscode.commands.executeCommand('agenticSuno.pause');
+                    break;
+                case 'resume':
+                    void vscode.commands.executeCommand('agenticSuno.resume');
                     break;
                 case 'playLibraryTrack':
                     if (typeof data.index === 'number') {
-                        vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
+                        void vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
                     }
                     break;
                 case 'mute':
-                    // Handle mute state change
-                    break;
                 case 'volumeChange':
-                    // Could persist volume here
+                    // Reserved for future persistence.
                     break;
                 case 'webviewReady':
                     this._webviewReady = true;
-                    if (this._pendingPlay) {
-                        this._view?.webview.postMessage({
-                            type: 'play',
-                            url: this._pendingPlay.url,
-                            title: this._pendingPlay.title,
-                            style: this._pendingPlay.style,
-                            mood: this._pendingPlay.mood,
-                        });
-                        this._pendingPlay = undefined;
-                    }
+                    this.flushPendingMessages();
                     break;
             }
         });
     }
-    /**
-     * Play now if webview is ready; otherwise store and send when webviewReady is received.
-     */
     playTrackWhenReady(url, title, style, mood) {
-        if (this._webviewReady && this._view) {
-            this._view.webview.postMessage({ type: 'play', url, title, style, mood });
-        }
-        else {
-            this._pendingPlay = { url, title, style, mood };
-        }
+        this.postToWebview({ type: 'play', url, title, style, mood });
     }
     playTrack(url, title, style, mood) {
-        console.log(`PlayerViewProvider: playTrack called with url=${url}`);
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'play', url, title, style, mood });
-        }
-        else {
-            console.error('PlayerViewProvider: _view is undefined, cannot play track');
-        }
+        this.postToWebview({ type: 'play', url, title, style, mood });
     }
     pause() {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'pause' });
-        }
+        this.postToWebview({ type: 'pause' });
     }
     resume() {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'resume' });
-        }
+        this.postToWebview({ type: 'resume' });
     }
     stop() {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'stop' });
-        }
+        this.postToWebview({ type: 'stop' });
     }
     setVolume(volume) {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'setVolume', volume });
-        }
+        this.postToWebview({ type: 'setVolume', volume });
     }
     updateState(state) {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'updateState', ...state });
-        }
+        this.postToWebview({ type: 'updateState', ...state });
     }
     addActivity(activity) {
-        if (this._view) {
-            this._view.webview.postMessage({
-                type: 'addActivity',
-                activity: {
-                    timestamp: activity.timestamp,
-                    text: activity.rawText.substring(0, 80),
-                    agentType: activity.agentType,
-                    mood: activity.classification.mood,
-                }
-            });
-        }
+        this.postToWebview({
+            type: 'addActivity',
+            activity: {
+                timestamp: activity.timestamp,
+                text: activity.rawText.substring(0, 80),
+                agentType: activity.agentType,
+                mood: activity.classification.mood,
+            },
+        });
     }
-    /**
-     * Show generating state with elapsed time
-     */
     showGenerating(elapsedSeconds) {
-        if (this._view) {
-            this._view.webview.postMessage({
-                type: 'generatingUpdate',
-                elapsedSeconds
-            });
-        }
+        this.postToWebview({ type: 'generatingUpdate', elapsedSeconds });
     }
-    /**
-     * Update the library list in the player (persisted + session tracks).
-     */
     setLibrary(tracks) {
-        if (this._view) {
-            this._view.webview.postMessage({
-                type: 'setLibrary',
-                tracks: tracks.map((t) => ({
-                    id: t.id,
-                    audio_url: t.audio_url,
-                    title: t.title,
-                    mood: t.mood,
-                    generatedAt: t.generatedAt,
-                })),
-            });
-        }
+        this.postToWebview({
+            type: 'setLibrary',
+            tracks: tracks.map((t) => ({
+                id: t.id,
+                audio_url: t.audio_url,
+                title: t.title,
+                mood: t.mood,
+                generatedAt: t.generatedAt,
+                engine: t.engine,
+            })),
+        });
     }
-    /**
-     * Tell the player whether a project theme is available (so it can show "Play project theme").
-     */
     setProjectThemeAvailable(available) {
-        if (this._view) {
-            this._view.webview.postMessage({ type: 'setProjectThemeAvailable', available });
-        }
+        this.postToWebview({ type: 'setProjectThemeAvailable', available });
     }
-    /**
-     * Show generation complete with total time
-     */
     showGenerationComplete(totalSeconds) {
-        if (this._view) {
-            this._view.webview.postMessage({
-                type: 'generationComplete',
-                totalSeconds
-            });
+        this.postToWebview({ type: 'generationComplete', totalSeconds });
+    }
+    streamInit(payload) {
+        this.postToWebview({
+            type: 'streamInit',
+            sessionId: payload.sessionId,
+            sampleRateHz: payload.sampleRateHz ?? 48000,
+            channels: payload.channels ?? 2,
+            mimeType: payload.mimeType ?? 'audio/pcm;rate=48000;channels=2',
+        });
+    }
+    streamChunk(chunk) {
+        if (!chunk.data || chunk.data.length > MAX_CHUNK_BASE64_LENGTH) {
+            console.warn(`PlayerViewProvider: Dropped oversized/invalid stream chunk (seq=${chunk.sequence}).`);
+            return;
         }
+        this.postToWebview({
+            type: 'streamChunk',
+            sessionId: chunk.sessionId,
+            sequence: chunk.sequence,
+            data: chunk.data,
+            mimeType: chunk.mimeType,
+            sampleRateHz: chunk.sampleRateHz,
+            channels: chunk.channels,
+            receivedAt: chunk.receivedAt,
+        });
+    }
+    streamPause() {
+        this.postToWebview({ type: 'streamPause' });
+    }
+    streamResume() {
+        this.postToWebview({ type: 'streamResume' });
+    }
+    streamStop() {
+        this.postToWebview({ type: 'streamStop' });
+    }
+    streamReset() {
+        this.postToWebview({ type: 'streamReset' });
+    }
+    streamError(message) {
+        this.postToWebview({ type: 'streamError', message });
+    }
+    postToWebview(message) {
+        if (!this._view || !this._webviewReady) {
+            this._pendingMessages.push(message);
+            if (this._pendingMessages.length > MAX_PENDING_MESSAGES) {
+                this._pendingMessages.shift();
+            }
+            return;
+        }
+        void this._view.webview.postMessage(message);
+    }
+    flushPendingMessages() {
+        if (!this._view || !this._webviewReady || this._pendingMessages.length === 0) {
+            return;
+        }
+        for (const message of this._pendingMessages) {
+            void this._view.webview.postMessage(message);
+        }
+        this._pendingMessages = [];
     }
     _getHtmlForWebview(webview) {
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'player.js'));
@@ -7530,7 +8405,7 @@ class PlayerViewProvider {
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https:; connect-src https:;">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https: blob:; connect-src https:;">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link href="${styleUri}" rel="stylesheet">
                 <title>AgenticSuno Player</title>
@@ -7543,17 +8418,17 @@ class PlayerViewProvider {
                     </button>
                     <p class="overlay-hint">Click to enable music playback</p>
                 </div>
-                
+
                 <div id="player-container">
                     <!-- Now Playing Section -->
                     <div id="now-playing" class="glass-card">
                         <h3 id="track-title">Waiting for Agents...</h3>
                         <p id="track-style">Start an AI agent to begin</p>
                         <span id="mood-badge" class="ambient">AMBIENT</span>
-                        
+
                         <!-- Visualizer -->
                         <div id="visualizer-container"></div>
-                        
+
                         <!-- Progress Bar -->
                         <div id="progress-container">
                             <div id="progress-bar"></div>
@@ -7563,19 +8438,19 @@ class PlayerViewProvider {
                             <span id="current-time">0:00</span>
                             <span id="total-time">0:00</span>
                         </div>
-                        
+
                         <!-- Controls -->
                         <div id="controls">
                             <button class="control-btn primary" id="play-btn" title="Play/Pause">▶</button>
                             <button class="control-btn" id="skip-btn" title="Skip">⏭</button>
                         </div>
-                        
+
                         <!-- Volume -->
                         <div id="volume-container">
                             <span id="volume-icon">🔊</span>
                             <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.7">
                         </div>
-                        
+
                         <!-- Intensity -->
                         <div id="intensity-container">
                             <span id="intensity-label">Intensity</span>
@@ -7585,7 +8460,7 @@ class PlayerViewProvider {
                             <span id="intensity-value">50%</span>
                         </div>
                     </div>
-                    
+
                     <!-- Project theme & Library -->
                     <div id="library-section" class="glass-card">
                         <h4>Your tracks</h4>
@@ -7595,7 +8470,7 @@ class PlayerViewProvider {
                         <p id="no-project-theme-hint" class="library-hint">No project theme yet. Start an agent or run "Start Music" to generate.</p>
                         <div id="library-list" class="library-list"></div>
                     </div>
-                    
+
                     <!-- Activity Feed -->
                     <div id="activity-section" class="glass-card">
                         <div id="activity-header">
@@ -7609,7 +8484,7 @@ class PlayerViewProvider {
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Hidden audio element -->
                     <audio id="audio-element" style="display: none;"></audio>
                 </div>
@@ -7976,6 +8851,17 @@ exports.TaskFileWatcher = TaskFileWatcher;
 
 "use strict";
 module.exports = require("vscode");
+
+/***/ },
+
+/***/ "ws"
+/*!*********************!*\
+  !*** external "ws" ***!
+  \*********************/
+(module) {
+
+"use strict";
+module.exports = require("ws");
 
 /***/ },
 

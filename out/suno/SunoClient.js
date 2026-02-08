@@ -117,7 +117,10 @@ class SunoClient {
                     }
                 }
                 if (data.data.status.includes('FAILED') || data.data.status.includes('ERROR')) {
-                    throw new Error(`Generation failed: ${data.data.errorMessage || data.data.status}`);
+                    const msg = data.data.errorMessage || data.data.status;
+                    const err = new Error(`Generation failed: ${msg}`);
+                    err.isTransient = msg.toLowerCase().includes('internal error') || msg.toLowerCase().includes('try again');
+                    throw err;
                 }
                 // Still processing, wait and retry
                 await new Promise(resolve => setTimeout(resolve, this.pollIntervalMs));
@@ -198,32 +201,44 @@ class SunoClient {
             const tracks = await this.getMockData(prompt, true);
             return this.createResult(tracks, startTime, 0);
         }
-        try {
-            console.log(`SunoClient: Sending extend request to ${this.baseUrl}/generate/extend`);
-            const response = await this.retryWithBackoff(() => axios_1.default.post(`${this.baseUrl}/generate/extend`, {
-                audioId: audioId,
-                prompt: prompt.substring(0, 500),
-                continueAt: continueAt || 60,
-                defaultParamFlag: true,
-                model: 'V5',
-                callBackUrl: 'https://localhost/callback' // Required by API, we use polling
-            }, { headers: this.getHeaders() }));
-            if (response.data.code !== 200) {
-                throw new Error(`API error: ${response.data.msg}`);
+        const maxAttempts = 2; // Retry once on transient errors (e.g. GENERATE_AUDIO_FAILED "Internal Error")
+        let lastError;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                console.log(`SunoClient: Sending extend request to ${this.baseUrl}/generate/extend (attempt ${attempt}/${maxAttempts})`);
+                const response = await this.retryWithBackoff(() => axios_1.default.post(`${this.baseUrl}/generate/extend`, {
+                    audioId: audioId,
+                    prompt: prompt.substring(0, 500),
+                    continueAt: continueAt || 60,
+                    defaultParamFlag: true,
+                    model: 'V5',
+                    callBackUrl: 'https://localhost/callback' // Required by API, we use polling
+                }, { headers: this.getHeaders() }));
+                if (response.data.code !== 200) {
+                    throw new Error(`API error: ${response.data.msg}`);
+                }
+                const taskId = response.data.data.taskId;
+                console.log(`SunoClient: Extend task created: ${taskId}`);
+                // Poll for completion
+                const { tracks, pollAttempts } = await this.pollForCompletion(taskId, startTime);
+                return this.createResult(tracks, startTime, pollAttempts);
             }
-            const taskId = response.data.data.taskId;
-            console.log(`SunoClient: Extend task created: ${taskId}`);
-            // Poll for completion
-            const { tracks, pollAttempts } = await this.pollForCompletion(taskId, startTime);
-            return this.createResult(tracks, startTime, pollAttempts);
+            catch (error) {
+                lastError = error;
+                const isTransient = error.isTransient === true;
+                if (isTransient && attempt < maxAttempts) {
+                    console.log(`SunoClient: Extend transient error (attempt ${attempt}), retrying...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                break;
+            }
         }
-        catch (error) {
-            console.error('SunoClient Extend Error:', error);
-            console.log('SunoClient: Extend API Failed. Falling back to Mock Data.');
-            vscode.window.showWarningMessage('AgenticSuno: Extend API failed. Using Mock Data.');
-            const tracks = await this.getMockData(prompt, true);
-            return this.createResult(tracks, startTime, 0);
-        }
+        console.error('SunoClient Extend Error:', lastError);
+        console.log('SunoClient: Extend API Failed. Falling back to Mock Data.');
+        vscode.window.showWarningMessage('AgenticSuno: Extend API failed. Using Mock Data.');
+        const tracks = await this.getMockData(prompt, true);
+        return this.createResult(tracks, startTime, 0);
     }
     /**
      * Create a GenerateResult with timing metrics

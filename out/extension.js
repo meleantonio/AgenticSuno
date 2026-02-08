@@ -156,7 +156,7 @@ function registerCommands(context, playerProvider) {
             }
             statusBarManager?.setGenerating();
             vscode.window.showInformationMessage('AgenticSuno: Starting Music...');
-            await musicManager.startFlowWithImmediatePlayback();
+            musicManager.startFlowWithImmediatePlayback();
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
         }
         catch (e) {
@@ -222,7 +222,12 @@ function registerCommands(context, playerProvider) {
         }
     });
     // Play a track from the library by index
-    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (_context, index) => {
+    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (...args) => {
+        const index = typeof args[0] === 'number'
+            ? args[0]
+            : typeof args[1] === 'number'
+                ? args[1]
+                : undefined;
         if (musicManager && typeof index === 'number') {
             musicManager.playLibraryTrack(index);
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
@@ -238,7 +243,7 @@ function log(message) {
 }
 function deactivate() {
     log('AgenticSuno deactivating...');
-    musicManager?.stop();
+    musicManager?.dispose();
     activityMonitor?.dispose();
     statusBarManager?.dispose();
 }

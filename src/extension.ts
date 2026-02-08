@@ -217,7 +217,13 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
     });
 
     // Play a track from the library by index
-    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (_context: unknown, index: number) => {
+    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (...args: unknown[]) => {
+        const index = typeof args[0] === 'number'
+            ? args[0]
+            : typeof args[1] === 'number'
+                ? args[1]
+                : undefined;
+
         if (musicManager && typeof index === 'number') {
             musicManager.playLibraryTrack(index);
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
@@ -236,7 +242,7 @@ function log(message: string) {
 
 export function deactivate() {
     log('AgenticSuno deactivating...');
-    musicManager?.stop();
+    musicManager?.dispose();
     activityMonitor?.dispose();
     statusBarManager?.dispose();
 }

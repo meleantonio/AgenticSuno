@@ -38,13 +38,27 @@ const vscode = __importStar(require("vscode"));
 const MusicManager_1 = require("../../music/MusicManager");
 suite('MusicManager Test Suite', () => {
     vscode.window.showInformationMessage('Start all tests.');
-    test('State Change triggers music flow', async () => {
+    test('Manager initializes with ambient mood', async () => {
         // Mock PlayerViewProvider
         const playerMock = {
             playTrack: (url) => { console.log('Mock Play:', url); },
+            playTrackWhenReady: () => { },
             stop: () => { console.log('Mock Stop'); },
+            pause: () => { },
+            resume: () => { },
+            showGenerating: () => { },
+            showGenerationComplete: () => { },
+            updateState: () => { },
+            addActivity: () => { },
             setLibrary: () => { },
             setProjectThemeAvailable: () => { },
+            streamInit: () => { },
+            streamChunk: () => { },
+            streamPause: () => { },
+            streamResume: () => { },
+            streamStop: () => { },
+            streamReset: () => { },
+            streamError: () => { },
             resolveWebviewView: () => { }
         };
         const workspaceStateMock = {
@@ -53,12 +67,7 @@ suite('MusicManager Test Suite', () => {
             keys: () => [],
         };
         const manager = new MusicManager_1.MusicManager(playerMock, workspaceStateMock);
-        // Mock SunoClient inside manager (needs dependency injection or mock override)
-        // For this simple test, we observe the state change
-        // In a real test we would mock the API call.
-        await manager.handleStateChange({ source: 'antigravity', status: 'working', intensity: 5 });
-        // Assertions would go here if we could inspect internal state or mock the client
-        assert.ok(true);
+        assert.strictEqual(manager.getCurrentMood(), 'ambient');
     });
 });
 //# sourceMappingURL=music.test.js.map

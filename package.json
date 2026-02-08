@@ -54,7 +54,32 @@
                 "agenticSuno.apiKey": {
                     "type": "string",
                     "default": "",
-                    "description": "Suno API Key (or Cookie) for generating music."
+                    "description": "Suno API key (fallback engine)."
+                },
+                "agenticSuno.geminiApiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Google Gemini API key used for Lyria realtime generation."
+                },
+                "agenticSuno.lyriaModel": {
+                    "type": "string",
+                    "default": "models/lyria-realtime-exp",
+                    "description": "Lyria realtime model name."
+                },
+                "agenticSuno.lyriaStyleAnchor": {
+                    "type": "string",
+                    "default": "midnight ocean penthouse ambiance, executive deep-focus groove, polished downtempo electronic, warm bassline, soft keys, subtle percussion, no vocals",
+                    "description": "Default style anchor text prepended to Lyria weighted prompts."
+                },
+                "agenticSuno.engine": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "lyria",
+                        "suno"
+                    ],
+                    "default": "auto",
+                    "description": "Music engine selection. Auto prefers Lyria when geminiApiKey is configured."
                 },
                 "agenticSuno.autoPlayOnActivity": {
                     "type": "boolean",
@@ -118,6 +143,7 @@
         "@types/glob": "^8.1.0",
         "@types/mocha": "^10.0.1",
         "@types/node": "^25.2.1",
+        "@types/ws": "^8.5.14",
         "@types/vscode": "^1.85.0",
         "@typescript-eslint/eslint-plugin": "^5.59.8",
         "@typescript-eslint/parser": "^5.59.8",
@@ -131,6 +157,7 @@
         "webpack-cli": "^5.1.1"
     },
     "dependencies": {
-        "axios": "^1.13.4"
+        "axios": "^1.13.4",
+        "ws": "^8.18.3"
     }
 }
