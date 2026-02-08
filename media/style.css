@@ -250,6 +250,67 @@ body {
 }
 
 /* Activity Feed */
+#library-section {
+    margin-top: 8px;
+}
+
+#library-section h4 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+}
+
+.library-btn {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent-focused);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.library-btn:hover {
+    background: rgba(99, 102, 241, 0.25);
+}
+
+.library-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.library-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.library-track-item {
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.library-track-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
 #activity-section {
     margin-top: 8px;
 }

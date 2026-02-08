@@ -36,7 +36,11 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         context.subscriptions.push(
-            vscode.window.registerWebviewViewProvider(PlayerViewProvider.viewType, playerProvider)
+            vscode.window.registerWebviewViewProvider(PlayerViewProvider.viewType, playerProvider, {
+                webviewOptions: {
+                    retainContextWhenHidden: true, // Keep player webview alive when sidebar is closed or another tab is focused so music keeps playing
+                },
+            })
         );
         log('PlayerViewProvider registered');
 
@@ -45,15 +49,16 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push({ dispose: () => statusBarManager?.dispose() });
         log('StatusBarManager created');
 
-        // 3. Setup Music Manager
-        musicManager = new MusicManager(playerProvider);
+        // 3. Setup Music Manager (with workspace state for persisted library)
+        musicManager = new MusicManager(playerProvider, context.workspaceState);
         log('MusicManager created');
+        musicManager.loadPersistedLibrary();
 
         // 4. Setup Activity Monitor
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         activityMonitor = new ActivityMonitor(workspaceFolder);
 
-        // Wire activity to music manager
+        // Wire activity to music manager: start generation on first activity (e.g. user sent chat message)
         activityMonitor.onActivity((activity) => {
             log(`Activity detected: ${activity.agentType} - ${activity.classification.mood}`);
             musicManager?.handleActivity(activity);
@@ -64,18 +69,26 @@ export function activate(context: vscode.ExtensionContext) {
                 mood: activity.classification.mood,
                 agentCount: activityMonitor?.getActiveAgentCount(),
             });
+
+            // Start music as soon as user sends a message (first activity); content drives mood
+            const config = vscode.workspace.getConfiguration('agenticSuno');
+            const autoPlay = config.get<boolean>('autoPlayOnActivity') !== false;
+            if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
+                statusBarManager?.setGenerating();
+                musicManager.startFlowFromActivity(activity).then(() => {
+                    const mood = musicManager?.getCurrentMood();
+                    statusBarManager?.setPlaying(mood ?? 'focused');
+                }).catch((e) => {
+                    log(`Start from activity error: ${e}`);
+                    statusBarManager?.setIdle();
+                });
+            }
         });
 
         activityMonitor.onAgentStart(({ agentType }) => {
             log(`Agent started: ${agentType}`);
             vscode.window.showInformationMessage(`AgenticSuno: Detected ${agentType} activity!`);
-
-            // Auto-start music if not playing
-            const config = vscode.workspace.getConfiguration('agenticSuno');
-            const autoPlay = config.get<boolean>('autoPlayOnActivity') !== false; // Default true
-            if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
-                musicManager.startFlow();
-            }
+            // Music starts on first activity (startFlowFromActivity), not here, so content drives initial mood
         });
 
         activityMonitor.onAgentEnd(({ agentType, duration }) => {
@@ -106,6 +119,10 @@ export function activate(context: vscode.ExtensionContext) {
 
         // 6. Register Commands
         registerCommands(context, playerProvider);
+        // Lazy project theme (after first paint)
+        setTimeout(() => {
+            musicManager?.ensureProjectTheme().catch((e) => log(`ensureProjectTheme: ${e}`));
+        }, 5000);
 
         log('AgenticSuno activation complete!');
         vscode.window.showInformationMessage('AgenticSuno ready! AI agents will trigger music.');
@@ -128,7 +145,7 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
             }
             statusBarManager?.setGenerating();
             vscode.window.showInformationMessage('AgenticSuno: Starting Music...');
-            await musicManager.startFlow();
+            musicManager.startFlowWithImmediatePlayback();
             statusBarManager?.setPlaying(musicManager.getCurrentMood());
         } catch (e) {
             log(`Start error: ${e}`);
@@ -190,7 +207,24 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
         await vscode.commands.executeCommand('agenticSuno.player.focus');
     });
 
-    context.subscriptions.push(startCmd, stopCmd, pauseCmd, resumeCmd, toggleCmd, skipCmd, showPlayerCmd);
+    // Play project theme (first song for this repo)
+    const playProjectThemeCmd = vscode.commands.registerCommand('agenticSuno.playProjectTheme', async () => {
+        if (musicManager) {
+            statusBarManager?.setGenerating();
+            await musicManager.playProjectTheme();
+            statusBarManager?.setPlaying(musicManager.getCurrentMood());
+        }
+    });
+
+    // Play a track from the library by index
+    const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (_context: unknown, index: number) => {
+        if (musicManager && typeof index === 'number') {
+            musicManager.playLibraryTrack(index);
+            statusBarManager?.setPlaying(musicManager.getCurrentMood());
+        }
+    });
+
+    context.subscriptions.push(startCmd, stopCmd, pauseCmd, resumeCmd, toggleCmd, skipCmd, showPlayerCmd, playProjectThemeCmd, playLibraryTrackCmd);
     log('Commands registered');
 }
 

@@ -43,9 +43,16 @@ suite('MusicManager Test Suite', () => {
         const playerMock = {
             playTrack: (url) => { console.log('Mock Play:', url); },
             stop: () => { console.log('Mock Stop'); },
+            setLibrary: () => { },
+            setProjectThemeAvailable: () => { },
             resolveWebviewView: () => { }
         };
-        const manager = new MusicManager_1.MusicManager(playerMock);
+        const workspaceStateMock = {
+            get: () => undefined,
+            update: () => Promise.resolve(),
+            keys: () => [],
+        };
+        const manager = new MusicManager_1.MusicManager(playerMock, workspaceStateMock);
         // Mock SunoClient inside manager (needs dependency injection or mock override)
         // For this simple test, we observe the state change
         // In a real test we would mock the API call.

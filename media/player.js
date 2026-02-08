@@ -9,6 +9,8 @@
     let animationFrameId = null;
     let audioEnabled = false; // Track if user has enabled audio via gesture
     let queuedTrack = null;   // Track queued while waiting for user gesture
+    let libraryTracks = [];  // Persisted library (from extension)
+    let projectThemeAvailable = false;
 
     // Initialize on load
     document.addEventListener('DOMContentLoaded', init);
@@ -31,6 +33,7 @@
         window.addEventListener('message', handleMessage);
 
         log('Player initialized');
+        vscode.postMessage({ type: 'webviewReady' });
     }
 
     function setupVisualizer() {
@@ -117,8 +120,12 @@
         });
 
         audioElement.addEventListener('error', (e) => {
-            log('Audio error: ' + (e.message || 'Unknown error'));
-            vscode.postMessage({ type: 'error', message: 'Audio playback error' });
+            const target = e.target;
+            const code = target && target.error ? target.error.code : -1;
+            const msg = target && target.error ? target.error.message : (e.message || 'Unknown error');
+            const codeNames = { 1: 'MEDIA_ERR_ABORTED', 2: 'MEDIA_ERR_NETWORK', 3: 'MEDIA_ERR_DECODE', 4: 'MEDIA_ERR_SRC_NOT_SUPPORTED' };
+            log('Audio error: ' + msg + ' (code ' + code + (codeNames[code] ? ': ' + codeNames[code] : '') + ')');
+            vscode.postMessage({ type: 'error', message: 'Audio playback error: ' + msg });
         });
     }
 
@@ -134,6 +141,14 @@
         if (skipBtn) {
             skipBtn.addEventListener('click', () => {
                 vscode.postMessage({ type: 'skip' });
+            });
+        }
+
+        // Play project theme button
+        const playProjectThemeBtn = document.getElementById('play-project-theme-btn');
+        if (playProjectThemeBtn) {
+            playProjectThemeBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'playProjectTheme' });
             });
         }
 
@@ -204,7 +219,38 @@
             case 'generationComplete':
                 showGenerationComplete(message.totalSeconds);
                 break;
+            case 'setLibrary':
+                libraryTracks = message.tracks || [];
+                renderLibraryList();
+                break;
+            case 'setProjectThemeAvailable':
+                projectThemeAvailable = !!message.available;
+                updateProjectThemeButton();
+                break;
         }
+    }
+
+    function updateProjectThemeButton() {
+        const btn = document.getElementById('play-project-theme-btn');
+        const hint = document.getElementById('no-project-theme-hint');
+        if (btn) btn.style.display = projectThemeAvailable ? 'block' : 'none';
+        if (hint) hint.style.display = projectThemeAvailable ? 'none' : 'block';
+    }
+
+    function renderLibraryList() {
+        const list = document.getElementById('library-list');
+        if (!list) return;
+        list.innerHTML = '';
+        libraryTracks.slice(0, 20).forEach((track, index) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'library-track-item';
+            item.textContent = (track.title || 'Track ' + (index + 1)) + (track.mood ? ' · ' + track.mood : '');
+            item.addEventListener('click', () => {
+                vscode.postMessage({ type: 'playLibraryTrack', index });
+            });
+            list.appendChild(item);
+        });
     }
 
     function showGeneratingTimer(elapsedSeconds) {
@@ -249,10 +295,26 @@
         }
 
         if (audioElement) {
-            audioElement.src = url;
+            // Pause before loading new source to avoid "interrupted by new load" / "interrupted by pause"
+            audioElement.pause();
+
+            // Allow CORS so remote CDN (e.g. musicfile.removeai.ai) can be loaded
+            audioElement.crossOrigin = 'anonymous';
+            // Use <source> with type so the browser doesn't fail format detection (Suno API typically returns MP3)
+            audioElement.innerHTML = '';
+            const source = document.createElement('source');
+            source.src = url;
+            source.type = 'audio/mpeg';
+            audioElement.appendChild(source);
+            audioElement.load();
             audioElement.play().catch(err => {
-                log('Play error: ' + err.message);
-                vscode.postMessage({ type: 'error', message: err.message });
+                const msg = err && err.message ? err.message : String(err);
+                // Ignore expected "interrupted" errors when switching tracks rapidly or pausing
+                if (msg.toLowerCase().includes('interrupted')) {
+                    return;
+                }
+                log('Play error: ' + msg);
+                vscode.postMessage({ type: 'error', message: msg || 'Playback failed' });
             });
         }
 
@@ -276,7 +338,9 @@
         if (audioElement) {
             audioElement.pause();
             audioElement.currentTime = 0;
-            audioElement.src = '';
+            audioElement.innerHTML = '';
+            audioElement.removeAttribute('src');
+            audioElement.load();
         }
         isPlaying = false;
         updatePlayButton();
@@ -295,7 +359,16 @@
         if (isPlaying) {
             audioElement.pause();
         } else {
-            audioElement.play().catch(err => log('Play error: ' + err));
+            // When idle (no track loaded), ask extension to start immediate playback + generation
+            const hasSource = audioElement.src && audioElement.src.length > 0;
+            if (!hasSource) {
+                vscode.postMessage({ type: 'startOrResume' });
+                return;
+            }
+            audioElement.play().catch(err => {
+                const msg = err && err.message ? err.message : String(err);
+                if (!msg.toLowerCase().includes('interrupted')) log('Play error: ' + msg);
+            });
         }
     }
 

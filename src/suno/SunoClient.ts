@@ -1,5 +1,6 @@
 import axios from 'axios';
 import * as vscode from 'vscode';
+import { Mood } from '../types';
 
 // Response from generate/extend endpoints
 interface GenerateResponse {
@@ -143,14 +144,26 @@ export class SunoClient {
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 console.log(`SunoClient: Poll attempt ${attempt + 1}, status: ${data.data.status}, elapsed: ${elapsed}s`);
 
+                // Return as soon as we have playable tracks: FIRST_SUCCESS (first track ready for streaming) or SUCCESS (all done)
                 if (data.data.status === 'SUCCESS' || data.data.status === 'FIRST_SUCCESS') {
-                    // Task complete, extract tracks
                     const tracks = data.data.response?.sunoData || [];
-                    return { tracks: tracks.map(t => this.normalizeTrack(t)), pollAttempts: attempt + 1 };
+                    if (tracks.length > 0) {
+                        if (data.data.status === 'FIRST_SUCCESS') {
+                            console.log(`SunoClient: First track(s) ready at FIRST_SUCCESS - returning ${tracks.length} track(s) for immediate playback`);
+                        }
+                        return { tracks: tracks.map(t => this.normalizeTrack(t)), pollAttempts: attempt + 1 };
+                    }
+                    // FIRST_SUCCESS with empty sunoData - keep polling until we have tracks or SUCCESS
+                    if (data.data.status === 'SUCCESS') {
+                        return { tracks: [], pollAttempts: attempt + 1 };
+                    }
                 }
 
                 if (data.data.status.includes('FAILED') || data.data.status.includes('ERROR')) {
-                    throw new Error(`Generation failed: ${data.data.errorMessage || data.data.status}`);
+                    const msg = data.data.errorMessage || data.data.status;
+                    const err = new Error(`Generation failed: ${msg}`);
+                    (err as any).isTransient = msg.toLowerCase().includes('internal error') || msg.toLowerCase().includes('try again');
+                    throw err;
                 }
 
                 // Still processing, wait and retry
@@ -166,7 +179,8 @@ export class SunoClient {
     }
 
     /**
-     * Normalize SunoTrack to our MusicTrack interface
+     * Normalize SunoTrack to our MusicTrack interface.
+     * Prefer streamAudioUrl when present so playback can start immediately (e.g. at FIRST_SUCCESS).
      */
     private normalizeTrack(track: SunoTrack): MusicTrack {
         return {
@@ -247,38 +261,52 @@ export class SunoClient {
             return this.createResult(tracks, startTime, 0);
         }
 
-        try {
-            console.log(`SunoClient: Sending extend request to ${this.baseUrl}/generate/extend`);
+        const maxAttempts = 2; // Retry once on transient errors (e.g. GENERATE_AUDIO_FAILED "Internal Error")
+        let lastError: any;
 
-            const response = await this.retryWithBackoff(() =>
-                axios.post<GenerateResponse>(`${this.baseUrl}/generate/extend`, {
-                    audioId: audioId,
-                    prompt: prompt.substring(0, 500),
-                    continueAt: continueAt || 60,
-                    defaultParamFlag: true,
-                    model: 'V5',
-                    callBackUrl: 'https://localhost/callback' // Required by API, we use polling
-                }, { headers: this.getHeaders() })
-            );
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                console.log(`SunoClient: Sending extend request to ${this.baseUrl}/generate/extend (attempt ${attempt}/${maxAttempts})`);
 
-            if (response.data.code !== 200) {
-                throw new Error(`API error: ${response.data.msg}`);
+                const response = await this.retryWithBackoff(() =>
+                    axios.post<GenerateResponse>(`${this.baseUrl}/generate/extend`, {
+                        audioId: audioId,
+                        prompt: prompt.substring(0, 500),
+                        continueAt: continueAt || 60,
+                        defaultParamFlag: true,
+                        model: 'V5',
+                        callBackUrl: 'https://localhost/callback' // Required by API, we use polling
+                    }, { headers: this.getHeaders() })
+                );
+
+                if (response.data.code !== 200) {
+                    throw new Error(`API error: ${response.data.msg}`);
+                }
+
+                const taskId = response.data.data.taskId;
+                console.log(`SunoClient: Extend task created: ${taskId}`);
+
+                // Poll for completion
+                const { tracks, pollAttempts } = await this.pollForCompletion(taskId, startTime);
+                return this.createResult(tracks, startTime, pollAttempts);
+
+            } catch (error: any) {
+                lastError = error;
+                const isTransient = (error as any).isTransient === true;
+                if (isTransient && attempt < maxAttempts) {
+                    console.log(`SunoClient: Extend transient error (attempt ${attempt}), retrying...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                break;
             }
-
-            const taskId = response.data.data.taskId;
-            console.log(`SunoClient: Extend task created: ${taskId}`);
-
-            // Poll for completion
-            const { tracks, pollAttempts } = await this.pollForCompletion(taskId, startTime);
-            return this.createResult(tracks, startTime, pollAttempts);
-
-        } catch (error: any) {
-            console.error('SunoClient Extend Error:', error);
-            console.log('SunoClient: Extend API Failed. Falling back to Mock Data.');
-            vscode.window.showWarningMessage('AgenticSuno: Extend API failed. Using Mock Data.');
-            const tracks = await this.getMockData(prompt, true);
-            return this.createResult(tracks, startTime, 0);
         }
+
+        console.error('SunoClient Extend Error:', lastError);
+        console.log('SunoClient: Extend API Failed. Falling back to Mock Data.');
+        vscode.window.showWarningMessage('AgenticSuno: Extend API failed. Using Mock Data.');
+        const tracks = await this.getMockData(prompt, true);
+        return this.createResult(tracks, startTime, 0);
     }
 
     /**
@@ -332,15 +360,49 @@ export class SunoClient {
         return allTracks;
     }
 
-    private async getMockData(prompt: string, isExtension: boolean = false): Promise<MusicTrack[]> {
+    /**
+     * Mock track URLs for mood-based immediate playback (SoundHelix demos).
+     * Map each Mood to one URL so repository mood drives mock selection.
+     */
+    private static readonly MOCK_URLS = [
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+        'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+    ];
+
+    /** Map Mood to index into MOCK_URLS (epic→0, tense→1, triumphant→2, focused→0, ambient→1). */
+    private static readonly MOOD_TO_MOCK_INDEX: Record<Mood, number> = {
+        epic: 0,
+        tense: 1,
+        triumphant: 2,
+        focused: 0,
+        ambient: 1,
+    };
+
+    /**
+     * Return a single mock track for the given mood (no latency).
+     * Used for immediate playback before generated track is ready.
+     */
+    public getMockTrackForMood(mood: Mood): MusicTrack {
+        const index = SunoClient.MOOD_TO_MOCK_INDEX[mood] ?? 0;
+        const url = SunoClient.MOCK_URLS[index] ?? SunoClient.MOCK_URLS[0];
+        return {
+            id: `mock-${mood}-${Date.now()}`,
+            audio_url: url,
+            title: `Mock (${mood})`,
+            status: 'complete',
+            duration: 120,
+            metadata: { tags: mood },
+        };
+    }
+
+    private async getMockData(prompt: string, isExtension: boolean = false, mood?: Mood): Promise<MusicTrack[]> {
         await new Promise(resolve => setTimeout(resolve, 1500)); // Simulate latency
 
-        const demoTracks = [
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
-        ];
-        const randomTrack = demoTracks[Math.floor(Math.random() * demoTracks.length)];
+        const demoTracks = SunoClient.MOCK_URLS;
+        const randomTrack = mood !== undefined
+            ? demoTracks[SunoClient.MOOD_TO_MOCK_INDEX[mood] ?? 0]
+            : demoTracks[Math.floor(Math.random() * demoTracks.length)];
 
         return [{
             id: `mock-${Date.now()}`,

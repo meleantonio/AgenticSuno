@@ -1,10 +1,19 @@
 import * as vscode from 'vscode';
-import { Mood, MusicStatus, AgentActivity } from '../types';
+import { Mood, MusicStatus, AgentActivity, PersistedTrack } from '../types';
+
+interface PendingPlay {
+    url: string;
+    title?: string;
+    style?: string;
+    mood?: Mood;
+}
 
 export class PlayerViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'agenticSuno.player';
 
     private _view?: vscode.WebviewView;
+    private _webviewReady = false;
+    private _pendingPlay: PendingPlay | undefined;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -27,13 +36,6 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
             ]
         };
 
-        // Keep webview alive when sidebar is hidden so audio continues playing
-        (webviewView as any).options = {
-            webviewOptions: {
-                retainContextWhenHidden: true
-            }
-        };
-
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage(data => {
@@ -53,14 +55,49 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                 case 'skip':
                     vscode.commands.executeCommand('agenticSuno.skip');
                     break;
+                case 'playProjectTheme':
+                    vscode.commands.executeCommand('agenticSuno.playProjectTheme');
+                    break;
+                case 'startOrResume':
+                    vscode.commands.executeCommand('agenticSuno.start');
+                    break;
+                case 'playLibraryTrack':
+                    if (typeof data.index === 'number') {
+                        vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
+                    }
+                    break;
                 case 'mute':
                     // Handle mute state change
                     break;
                 case 'volumeChange':
                     // Could persist volume here
                     break;
+                case 'webviewReady':
+                    this._webviewReady = true;
+                    if (this._pendingPlay) {
+                        this._view?.webview.postMessage({
+                            type: 'play',
+                            url: this._pendingPlay.url,
+                            title: this._pendingPlay.title,
+                            style: this._pendingPlay.style,
+                            mood: this._pendingPlay.mood,
+                        });
+                        this._pendingPlay = undefined;
+                    }
+                    break;
             }
         });
+    }
+
+    /**
+     * Play now if webview is ready; otherwise store and send when webviewReady is received.
+     */
+    public playTrackWhenReady(url: string, title?: string, style?: string, mood?: Mood): void {
+        if (this._webviewReady && this._view) {
+            this._view.webview.postMessage({ type: 'play', url, title, style, mood });
+        } else {
+            this._pendingPlay = { url, title, style, mood };
+        }
     }
 
     public playTrack(url: string, title?: string, style?: string, mood?: Mood) {
@@ -134,6 +171,33 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     * Update the library list in the player (persisted + session tracks).
+     */
+    public setLibrary(tracks: PersistedTrack[]) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'setLibrary',
+                tracks: tracks.map((t) => ({
+                    id: t.id,
+                    audio_url: t.audio_url,
+                    title: t.title,
+                    mood: t.mood,
+                    generatedAt: t.generatedAt,
+                })),
+            });
+        }
+    }
+
+    /**
+     * Tell the player whether a project theme is available (so it can show "Play project theme").
+     */
+    public setProjectThemeAvailable(available: boolean) {
+        if (this._view) {
+            this._view.webview.postMessage({ type: 'setProjectThemeAvailable', available });
+        }
+    }
+
+    /**
      * Show generation complete with total time
      */
     public showGenerationComplete(totalSeconds: number) {
@@ -154,7 +218,7 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https:;">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src https:; connect-src https:;">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link href="${styleUri}" rel="stylesheet">
                 <title>AgenticSuno Player</title>
@@ -208,6 +272,16 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
                             </div>
                             <span id="intensity-value">50%</span>
                         </div>
+                    </div>
+                    
+                    <!-- Project theme & Library -->
+                    <div id="library-section" class="glass-card">
+                        <h4>Your tracks</h4>
+                        <button type="button" id="play-project-theme-btn" class="library-btn" style="display: none;">
+                            🎵 Play project theme
+                        </button>
+                        <p id="no-project-theme-hint" class="library-hint">No project theme yet. Start an agent or run "Start Music" to generate.</p>
+                        <div id="library-list" class="library-list"></div>
                     </div>
                     
                     <!-- Activity Feed -->
