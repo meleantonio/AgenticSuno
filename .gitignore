@@ -22,5 +22,9 @@ npm-debug.log*
 
 # Environment
 .env
+.env.release
 .env.local
 .env.*.local
+.release-artifacts/
+*.vsix
+lyria_realtime_pivot_specs_b3827131.plan.md

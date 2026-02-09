@@ -7,6 +7,7 @@ export type ActivitySource = 'output_channel' | 'terminal' | 'file_system';
 export type Mood = 'epic' | 'focused' | 'tense' | 'triumphant' | 'ambient';
 export type TaskPhase = 'planning' | 'execution' | 'verification' | 'idle';
 export type MusicStatus = 'idle' | 'generating' | 'playing' | 'paused' | 'error';
+export type MusicEngineMode = 'lyria' | 'suno';
 
 export interface AgentActivity {
     id: string;
@@ -32,6 +33,23 @@ export interface AgentState {
     intensity: number; // 1-10
     currentTask?: string;
     mood?: Mood;
+}
+
+// ========== Lyria Realtime ==========
+
+export interface LyriaPromptWeight {
+    text: string;
+    weight: number;
+}
+
+export interface LyriaGenerationPreset {
+    temperature?: number;
+    guidance?: number;
+    bpm?: number;
+    density?: number;
+    brightness?: number;
+    topK?: number;
+    seed?: number;
 }
 
 // ========== Music State ==========
@@ -63,7 +81,7 @@ export interface AudioClip {
 
 export interface ProjectTheme {
     name: string;
-    prompt: string;  // Base prompt for Suno
+    prompt: string;  // Base prompt for Suno/Lyria
     style: string;   // Musical style descriptor
     generatedFrom: string;  // Source (README, package.json, etc.)
 }
@@ -73,12 +91,15 @@ export interface ProjectTheme {
 /** One track stored in the song library for replay across sessions */
 export interface PersistedTrack {
     id: string;
-    audio_url: string;
+    audio_url?: string;
     title?: string;
     mood?: Mood;
     generatedAt: number;
     prompt?: string;
     style?: string;
+    engine?: MusicEngineMode;
+    weightedPrompts?: LyriaPromptWeight[];
+    generationConfig?: LyriaGenerationPreset;
 }
 
 /** Project theme (first song) stored in workspaceState */
@@ -87,6 +108,9 @@ export interface StoredProjectTheme {
     prompt: string;
     style?: string;
     generatedAt?: number;
+    engine?: MusicEngineMode;
+    weightedPrompts?: LyriaPromptWeight[];
+    generationConfig?: LyriaGenerationPreset;
 }
 
 // ========== Suno API ==========
@@ -119,6 +143,12 @@ export interface SunoTaskResponse {
 
 export interface ExtensionConfig {
     sunoApiKey: string;
+    geminiApiKey: string;
+    lyriaModel: string;
+    lyriaStyleAnchor: string;
+    lyriaEvolutionStrength: 'subtle' | 'balanced' | 'strong';
+    lyriaSkipVariation: number;
+    engine: 'auto' | MusicEngineMode;
     autoPlayOnActivity: boolean;
     monitoredChannels: string[];  // Regex patterns
     preferredStyle: string;
@@ -136,6 +166,23 @@ export interface TimeUpdateEvent {
 }
 
 export interface WebviewMessage {
-    type: 'play' | 'pause' | 'stop' | 'setVolume' | 'timeUpdate' | 'ended' | 'log' | 'error' | 'updateState';
+    type:
+    | 'play'
+    | 'pause'
+    | 'resume'
+    | 'stop'
+    | 'setVolume'
+    | 'timeUpdate'
+    | 'ended'
+    | 'log'
+    | 'error'
+    | 'updateState'
+    | 'streamInit'
+    | 'streamChunk'
+    | 'streamPause'
+    | 'streamResume'
+    | 'streamStop'
+    | 'streamReset'
+    | 'streamError';
     [key: string]: any;
 }

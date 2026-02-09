@@ -15,6 +15,7 @@ module.exports = {
     devtool: 'nosources-source-map',
     externals: {
         'vscode': 'commonjs vscode', // ignored because it doesn't exist
+        'ws': 'commonjs ws',
     },
     resolve: {
         extensions: ['.ts', '.js'],

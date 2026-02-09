@@ -1,8 +1,26 @@
 {
     "name": "agentic-suno",
     "displayName": "AgenticSuno",
+    "publisher": "agenticsuno",
     "description": "Adaptive AI Music for Coding Agents",
     "version": "0.0.1",
+    "icon": "media/icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/meleantonio/AgenticSuno.git"
+    },
+    "license": "UNLICENSED",
+    "keywords": [
+        "music",
+        "ai",
+        "coding",
+        "agent",
+        "background",
+        "productivity",
+        "suno",
+        "lyria",
+        "audio"
+    ],
     "engines": {
         "vscode": "^1.85.0"
     },
@@ -54,7 +72,49 @@
                 "agenticSuno.apiKey": {
                     "type": "string",
                     "default": "",
-                    "description": "Suno API Key (or Cookie) for generating music."
+                    "description": "Suno API key (fallback engine)."
+                },
+                "agenticSuno.geminiApiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Google Gemini API key used for Lyria realtime generation."
+                },
+                "agenticSuno.lyriaModel": {
+                    "type": "string",
+                    "default": "models/lyria-realtime-exp",
+                    "description": "Lyria realtime model name."
+                },
+                "agenticSuno.lyriaStyleAnchor": {
+                    "type": "string",
+                    "default": "cinematic electronic soul with expressive harmonic movement, textured low-end groove, evolving melodic motifs, polished modern production, dynamic transitions, emotionally rich atmosphere",
+                    "description": "Default style anchor text prepended to Lyria weighted prompts."
+                },
+                "agenticSuno.lyriaEvolutionStrength": {
+                    "type": "string",
+                    "enum": [
+                        "subtle",
+                        "balanced",
+                        "strong"
+                    ],
+                    "default": "strong",
+                    "description": "How strongly activity changes steer Lyria prompts and generation controls."
+                },
+                "agenticSuno.lyriaSkipVariation": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.85,
+                    "description": "How much skip introduces fresh variation while preserving style family."
+                },
+                "agenticSuno.engine": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "lyria",
+                        "suno"
+                    ],
+                    "default": "auto",
+                    "description": "Music engine selection. Auto prefers Lyria when geminiApiKey is configured."
                 },
                 "agenticSuno.autoPlayOnActivity": {
                     "type": "boolean",
@@ -105,6 +165,8 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run package",
+        "release:check": "bash ./scripts/check-marketplace-readiness.sh",
+        "release:publish": "bash ./scripts/publish-extension.sh",
         "compile": "webpack",
         "watch": "webpack --watch",
         "package": "webpack --mode production --devtool hidden-source-map",
@@ -118,6 +180,7 @@
         "@types/glob": "^8.1.0",
         "@types/mocha": "^10.0.1",
         "@types/node": "^25.2.1",
+        "@types/ws": "^8.5.14",
         "@types/vscode": "^1.85.0",
         "@typescript-eslint/eslint-plugin": "^5.59.8",
         "@typescript-eslint/parser": "^5.59.8",
@@ -131,6 +194,7 @@
         "webpack-cli": "^5.1.1"
     },
     "dependencies": {
-        "axios": "^1.13.4"
+        "axios": "^1.13.4",
+        "ws": "^8.18.3"
     }
 }

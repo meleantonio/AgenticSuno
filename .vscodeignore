@@ -1,0 +1,17 @@
+.agent/**
+.vscode/**
+.vscode-test/**
+src/**
+out/**
+spec/**
+steering/**
+docs/**
+scripts/**
+.env.release
+.env.release.example
+ROADMAP-TO-LYRIA.md
+cursor_chat_recording.md
+extracted_framework.md
+lyria_realtime_pivot_specs_b3827131.plan.md
+raw_notes.md
+**/*.map
