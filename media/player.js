@@ -19,6 +19,9 @@
     let queuedTrack = null;
     let libraryTracks = [];
     let projectThemeAvailable = false;
+    let libraryCollapsed = true;
+    let pendingLibraryTrackId = null;
+    let libraryLoadingTimeoutId = null;
 
     let playbackMode = 'none'; // 'none' | 'url' | 'stream'
     let currentVolume = 0.7;
@@ -34,6 +37,7 @@
         scheduledSources: [],
         isDecoding: false,
         nextPlayTime: 0,
+        isPaused: false,
     };
 
     document.addEventListener('DOMContentLoaded', init);
@@ -145,6 +149,7 @@
             const code = target && target.error ? target.error.code : -1;
             const msg = target && target.error ? target.error.message : (e.message || 'Unknown error');
             const codeNames = { 1: 'MEDIA_ERR_ABORTED', 2: 'MEDIA_ERR_NETWORK', 3: 'MEDIA_ERR_DECODE', 4: 'MEDIA_ERR_SRC_NOT_SUPPORTED' };
+            clearLibraryLoading();
             log('Audio error: ' + msg + ' (code ' + code + (codeNames[code] ? ': ' + codeNames[code] : '') + ')');
             vscode.postMessage({ type: 'error', message: 'Audio playback error: ' + msg });
         });
@@ -163,10 +168,24 @@
             });
         }
 
+        const stopBtn = document.getElementById('stop-btn');
+        if (stopBtn) {
+            stopBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'stop' });
+            });
+        }
+
         const playProjectThemeBtn = document.getElementById('play-project-theme-btn');
         if (playProjectThemeBtn) {
             playProjectThemeBtn.addEventListener('click', () => {
                 vscode.postMessage({ type: 'playProjectTheme' });
+            });
+        }
+
+        const libraryToggleBtn = document.getElementById('library-toggle-btn');
+        if (libraryToggleBtn) {
+            libraryToggleBtn.addEventListener('click', () => {
+                setLibraryCollapsed(!libraryCollapsed);
             });
         }
 
@@ -200,6 +219,8 @@
                 }
             });
         }
+
+        setLibraryCollapsed(true);
     }
 
     function handleMessage(event) {
@@ -208,6 +229,7 @@
 
         switch (message.type) {
             case 'play':
+                clearLibraryLoading();
                 playTrack(message.url, message.title, message.style, message.mood);
                 break;
             case 'pause':
@@ -218,6 +240,7 @@
                 }
                 break;
             case 'resume':
+                clearLibraryLoading();
                 if (playbackMode === 'stream') {
                     resumeStreamPlayback();
                 } else if (audioElement) {
@@ -225,6 +248,7 @@
                 }
                 break;
             case 'stop':
+                clearLibraryLoading();
                 stopPlayback();
                 break;
             case 'setVolume':
@@ -256,24 +280,30 @@
                 updateProjectThemeButton();
                 break;
             case 'streamInit':
+                clearLibraryLoading();
                 handleStreamInit(message);
                 break;
             case 'streamChunk':
+                clearLibraryLoading();
                 handleStreamChunk(message);
                 break;
             case 'streamPause':
                 pauseStreamPlayback();
                 break;
             case 'streamResume':
+                clearLibraryLoading();
                 resumeStreamPlayback();
                 break;
             case 'streamStop':
+                clearLibraryLoading();
                 stopStreamPlayback(true);
                 break;
             case 'streamReset':
+                clearLibraryLoading();
                 resetStreamContext();
                 break;
             case 'streamError':
+                clearLibraryLoading();
                 log('Stream error: ' + (message.message || 'unknown'));
                 break;
         }
@@ -294,11 +324,81 @@
             const item = document.createElement('button');
             item.type = 'button';
             item.className = 'library-track-item';
+            item.dataset.trackId = String(track.id || '');
             item.textContent = (track.title || 'Track ' + (index + 1)) + (track.mood ? ' · ' + track.mood : '') + (track.engine ? ' · ' + track.engine : '');
             item.addEventListener('click', () => {
-                vscode.postMessage({ type: 'playLibraryTrack', index });
+                const trackId = String(track.id || '');
+                if (!trackId || pendingLibraryTrackId) {
+                    return;
+                }
+                setLibraryLoading(trackId);
+                vscode.postMessage({ type: 'playLibraryTrack', trackId });
             });
             list.appendChild(item);
+        });
+        applyLibraryLoadingState();
+    }
+
+    function setLibraryCollapsed(collapsed) {
+        libraryCollapsed = !!collapsed;
+        const content = document.getElementById('library-content');
+        const toggle = document.getElementById('library-toggle-btn');
+        if (content) {
+            content.classList.toggle('collapsed', libraryCollapsed);
+            content.classList.toggle('expanded', !libraryCollapsed);
+        }
+        if (toggle) {
+            toggle.textContent = libraryCollapsed ? '▸' : '▾';
+            toggle.setAttribute('aria-expanded', String(!libraryCollapsed));
+            toggle.title = libraryCollapsed ? 'Show tracks' : 'Hide tracks';
+        }
+    }
+
+    function setLibraryLoading(trackId) {
+        pendingLibraryTrackId = trackId;
+        if (libraryLoadingTimeoutId) {
+            clearTimeout(libraryLoadingTimeoutId);
+            libraryLoadingTimeoutId = null;
+        }
+        libraryLoadingTimeoutId = setTimeout(() => {
+            clearLibraryLoading();
+        }, 8000);
+        applyLibraryLoadingState();
+    }
+
+    function clearLibraryLoading() {
+        if (!pendingLibraryTrackId) return;
+        pendingLibraryTrackId = null;
+        if (libraryLoadingTimeoutId) {
+            clearTimeout(libraryLoadingTimeoutId);
+            libraryLoadingTimeoutId = null;
+        }
+        applyLibraryLoadingState();
+    }
+
+    function applyLibraryLoadingState() {
+        const list = document.getElementById('library-list');
+        if (!list) return;
+
+        const items = list.querySelectorAll('.library-track-item');
+        items.forEach((item) => {
+            const el = item;
+            const trackId = el.dataset.trackId || '';
+            const isLoading = pendingLibraryTrackId && trackId === pendingLibraryTrackId;
+            el.disabled = !!pendingLibraryTrackId;
+            if (isLoading) {
+                el.classList.add('loading');
+                if (!el.dataset.originalText) {
+                    el.dataset.originalText = el.textContent || '';
+                }
+                el.textContent = 'Loading track...';
+            } else {
+                el.classList.remove('loading');
+                if (el.dataset.originalText) {
+                    el.textContent = el.dataset.originalText;
+                    delete el.dataset.originalText;
+                }
+            }
         });
     }
 
@@ -385,6 +485,7 @@
         streamState.channels = Number(message.channels) || 2;
         streamState.mimeType = message.mimeType || 'audio/pcm;rate=48000;channels=2';
         streamState.hasLoggedChunkFormat = false;
+        streamState.isPaused = false;
 
         resetStreamContext();
 
@@ -435,7 +536,7 @@
             );
         }
 
-        if (audioEnabled) {
+        if (audioEnabled && !streamState.isPaused) {
             processStreamQueue();
         }
     }
@@ -452,10 +553,6 @@
             applyStreamVolume();
         }
 
-        if (audioEnabled && audioContext.state === 'suspended') {
-            await audioContext.resume();
-        }
-
         return audioContext;
     }
 
@@ -465,7 +562,7 @@
     }
 
     async function processStreamQueue() {
-        if (streamState.isDecoding || playbackMode !== 'stream' || !audioEnabled) {
+        if (streamState.isDecoding || playbackMode !== 'stream' || !audioEnabled || streamState.isPaused) {
             return;
         }
 
@@ -474,7 +571,7 @@
         try {
             const context = await ensureAudioContext();
 
-            while (streamState.pendingChunks.length > 0 && playbackMode === 'stream' && audioEnabled) {
+            while (streamState.pendingChunks.length > 0 && playbackMode === 'stream' && audioEnabled && !streamState.isPaused) {
                 const chunk = streamState.pendingChunks.shift();
                 const audioBuffer = await decodeStreamChunk(context, chunk);
                 scheduleStreamBuffer(context, audioBuffer);
@@ -534,6 +631,7 @@
     async function pauseStreamPlayback() {
         if (playbackMode !== 'stream') return;
 
+        streamState.isPaused = true;
         try {
             const context = await ensureAudioContext();
             if (context.state === 'running') {
@@ -557,6 +655,7 @@
             return;
         }
 
+        streamState.isPaused = false;
         try {
             const context = await ensureAudioContext();
             if (context.state === 'suspended') {
@@ -575,6 +674,7 @@
     }
 
     function resetStreamContext() {
+        streamState.isPaused = false;
         streamState.pendingChunks = [];
         streamState.scheduledSources.forEach((source) => {
             try {
@@ -613,6 +713,7 @@
 
         if (resetUi) {
             playbackMode = 'none';
+            streamState.isPaused = false;
             const currentTimeEl = document.getElementById('current-time');
             const totalTimeEl = document.getElementById('total-time');
             if (currentTimeEl) currentTimeEl.textContent = '0:00';

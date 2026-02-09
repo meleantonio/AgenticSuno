@@ -27,6 +27,7 @@ export class LyriaEngineAdapter {
     private lastPrompts: LyriaWeightedPrompt[] = [];
     private lastConfig: LyriaGenerationConfig = {};
     private wantsPlayback = false;
+    private hasStartedSession = false;
 
     constructor(
         apiKey: string,
@@ -50,6 +51,7 @@ export class LyriaEngineAdapter {
         await this.client.setWeightedPrompts(prompts);
         await this.client.setGenerationConfig(config);
         this.client.play();
+        this.hasStartedSession = true;
         this.callbacks.onStreamResume();
     }
 
@@ -90,6 +92,7 @@ export class LyriaEngineAdapter {
 
     public async stop(): Promise<void> {
         this.wantsPlayback = false;
+        this.hasStartedSession = false;
         const session = this.client.getSessionInfo();
         if (session) {
             this.client.stop();
@@ -111,7 +114,7 @@ export class LyriaEngineAdapter {
             this.callbacks.onStreamInit(session);
 
             // Rehydrate steering state after reconnect.
-            if (this.lastPrompts.length > 0) {
+            if (this.hasStartedSession && this.lastPrompts.length > 0) {
                 try {
                     await this.client.setWeightedPrompts(this.lastPrompts);
                     await this.client.setGenerationConfig(this.lastConfig);

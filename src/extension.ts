@@ -57,17 +57,19 @@ export function activate(context: vscode.ExtensionContext) {
         // 4. Setup Activity Monitor
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         activityMonitor = new ActivityMonitor(workspaceFolder);
+        musicManager.setAgentCount(0);
 
         // Wire activity to music manager: start generation on first activity (e.g. user sent chat message)
         activityMonitor.onActivity((activity) => {
             log(`Activity detected: ${activity.agentType} - ${activity.classification.mood}`);
-            musicManager?.handleActivity(activity);
+            const activeAgentCount = activityMonitor?.getActiveAgentCount() ?? 0;
+            musicManager?.handleActivity(activity, activeAgentCount);
 
             // Update status bar
             statusBarManager?.update({
                 status: 'playing',
                 mood: activity.classification.mood,
-                agentCount: activityMonitor?.getActiveAgentCount(),
+                agentCount: activeAgentCount,
             });
 
             // Start music as soon as user sends a message (first activity); content drives mood
@@ -75,7 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
             const autoPlay = config.get<boolean>('autoPlayOnActivity') !== false;
             if (autoPlay && musicManager && !musicManager.isCurrentlyPlaying()) {
                 statusBarManager?.setGenerating();
-                musicManager.startFlowFromActivity(activity).then(() => {
+                musicManager.startFlow(activity.rawText).then(() => {
                     const mood = musicManager?.getCurrentMood();
                     statusBarManager?.setPlaying(mood ?? 'focused');
                 }).catch((e) => {
@@ -88,14 +90,18 @@ export function activate(context: vscode.ExtensionContext) {
         activityMonitor.onAgentStart(({ agentType }) => {
             log(`Agent started: ${agentType}`);
             vscode.window.showInformationMessage(`AgenticSuno: Detected ${agentType} activity!`);
+            const activeAgentCount = activityMonitor?.getActiveAgentCount() ?? 0;
+            musicManager?.setAgentCount(activeAgentCount);
             // Music starts on first activity (startFlowFromActivity), not here, so content drives initial mood
         });
 
         activityMonitor.onAgentEnd(({ agentType, duration }) => {
             log(`Agent ended: ${agentType} after ${duration}ms`);
+            const activeAgentCount = activityMonitor?.getActiveAgentCount() ?? 0;
+            musicManager?.setAgentCount(activeAgentCount);
 
             // If no more active agents, show idle state
-            if (activityMonitor?.getActiveAgentCount() === 0) {
+            if (activeAgentCount === 0) {
                 statusBarManager?.setIdle();
             }
         });
@@ -218,11 +224,22 @@ function registerCommands(context: vscode.ExtensionContext, playerProvider: Play
 
     // Play a track from the library by index
     const playLibraryTrackCmd = vscode.commands.registerCommand('agenticSuno.playLibraryTrack', (...args: unknown[]) => {
+        const trackId = typeof args[0] === 'string'
+            ? args[0]
+            : typeof args[1] === 'string'
+                ? args[1]
+                : undefined;
         const index = typeof args[0] === 'number'
             ? args[0]
             : typeof args[1] === 'number'
                 ? args[1]
                 : undefined;
+
+        if (musicManager && typeof trackId === 'string' && trackId.length > 0) {
+            musicManager.playLibraryTrackById(trackId);
+            statusBarManager?.setPlaying(musicManager.getCurrentMood());
+            return;
+        }
 
         if (musicManager && typeof index === 'number') {
             musicManager.playLibraryTrack(index);

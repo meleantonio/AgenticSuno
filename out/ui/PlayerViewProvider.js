@@ -87,8 +87,15 @@ class PlayerViewProvider {
                 case 'resume':
                     void vscode.commands.executeCommand('agenticSuno.resume');
                     break;
+                case 'stop':
+                    void vscode.commands.executeCommand('agenticSuno.stop');
+                    break;
                 case 'playLibraryTrack':
-                    if (typeof data.index === 'number') {
+                    if (typeof data.trackId === 'string' && data.trackId.length > 0) {
+                        void vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.trackId);
+                    }
+                    else if (typeof data.index === 'number') {
+                        // Backward compatibility for older webview payloads.
                         void vscode.commands.executeCommand('agenticSuno.playLibraryTrack', data.index);
                     }
                     break;
@@ -261,6 +268,7 @@ class PlayerViewProvider {
                         <!-- Controls -->
                         <div id="controls">
                             <button class="control-btn primary" id="play-btn" title="Play/Pause">▶</button>
+                            <button class="control-btn" id="stop-btn" title="Stop">⏹</button>
                             <button class="control-btn" id="skip-btn" title="Skip">⏭</button>
                         </div>
 
@@ -282,12 +290,17 @@ class PlayerViewProvider {
 
                     <!-- Project theme & Library -->
                     <div id="library-section" class="glass-card">
-                        <h4>Your tracks</h4>
-                        <button type="button" id="play-project-theme-btn" class="library-btn" style="display: none;">
-                            🎵 Play project theme
-                        </button>
-                        <p id="no-project-theme-hint" class="library-hint">No project theme yet. Start an agent or run "Start Music" to generate.</p>
-                        <div id="library-list" class="library-list"></div>
+                        <div id="library-header">
+                            <h4>Your tracks</h4>
+                            <button type="button" id="library-toggle-btn" class="library-toggle-btn" aria-expanded="false" title="Show tracks">▸</button>
+                        </div>
+                        <div id="library-content" class="library-content collapsed">
+                            <button type="button" id="play-project-theme-btn" class="library-btn" style="display: none;">
+                                🎵 Play project theme
+                            </button>
+                            <p id="no-project-theme-hint" class="library-hint">No project theme yet. Start an agent or run "Start Music" to generate.</p>
+                            <div id="library-list" class="library-list"></div>
+                        </div>
                     </div>
 
                     <!-- Activity Feed -->

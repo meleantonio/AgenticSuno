@@ -1,8 +1,26 @@
 {
     "name": "agentic-suno",
     "displayName": "AgenticSuno",
+    "publisher": "agenticsuno",
     "description": "Adaptive AI Music for Coding Agents",
     "version": "0.0.1",
+    "icon": "media/icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/meleantonio/AgenticSuno.git"
+    },
+    "license": "UNLICENSED",
+    "keywords": [
+        "music",
+        "ai",
+        "coding",
+        "agent",
+        "background",
+        "productivity",
+        "suno",
+        "lyria",
+        "audio"
+    ],
     "engines": {
         "vscode": "^1.85.0"
     },
@@ -68,8 +86,25 @@
                 },
                 "agenticSuno.lyriaStyleAnchor": {
                     "type": "string",
-                    "default": "midnight ocean penthouse ambiance, executive deep-focus groove, polished downtempo electronic, warm bassline, soft keys, subtle percussion, no vocals",
+                    "default": "cinematic electronic soul with expressive harmonic movement, textured low-end groove, evolving melodic motifs, polished modern production, dynamic transitions, emotionally rich atmosphere",
                     "description": "Default style anchor text prepended to Lyria weighted prompts."
+                },
+                "agenticSuno.lyriaEvolutionStrength": {
+                    "type": "string",
+                    "enum": [
+                        "subtle",
+                        "balanced",
+                        "strong"
+                    ],
+                    "default": "strong",
+                    "description": "How strongly activity changes steer Lyria prompts and generation controls."
+                },
+                "agenticSuno.lyriaSkipVariation": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.85,
+                    "description": "How much skip introduces fresh variation while preserving style family."
                 },
                 "agenticSuno.engine": {
                     "type": "string",
@@ -130,6 +165,8 @@
     },
     "scripts": {
         "vscode:prepublish": "npm run package",
+        "release:check": "bash ./scripts/check-marketplace-readiness.sh",
+        "release:publish": "bash ./scripts/publish-extension.sh",
         "compile": "webpack",
         "watch": "webpack --watch",
         "package": "webpack --mode production --devtool hidden-source-map",

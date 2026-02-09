@@ -8,6 +8,7 @@ AgenticSuno now uses **Google Lyria Realtime** as the primary engine for low-lat
 
 - Primary engine: `Lyria Realtime` streaming from extension host to webview.
 - Fallback engine: `Suno` URL playback (or mock mode) when Gemini key is missing/unavailable.
+- Strict Lyria-first generation: when Lyria is available, Suno `generate/extend` is blocked unless engine is explicitly set to `suno`.
 - Engine abstraction introduced in `src/music/engine/`.
 - Host-side API key handling only (Gemini key is never posted to the webview).
 - Webview now supports streaming protocol messages:
@@ -34,10 +35,22 @@ AgenticSuno now uses **Google Lyria Realtime** as the primary engine for low-lat
 | `agenticSuno.engine` | `"auto"` | Engine selection: `auto`, `lyria`, `suno`. |
 | `agenticSuno.geminiApiKey` | `""` | Gemini API key for Lyria realtime. |
 | `agenticSuno.lyriaModel` | `"models/lyria-realtime-exp"` | Lyria model name. |
-| `agenticSuno.lyriaStyleAnchor` | `"midnight ocean penthouse ambiance, executive deep-focus groove, polished downtempo electronic, warm bassline, soft keys, subtle percussion, no vocals"` | Base style text applied to all generated Lyria prompts. |
+| `agenticSuno.lyriaStyleAnchor` | `"cinematic electronic soul with expressive harmonic movement, textured low-end groove, evolving melodic motifs, polished modern production, dynamic transitions, emotionally rich atmosphere"` | Base style text applied to all generated Lyria prompts. |
+| `agenticSuno.lyriaEvolutionStrength` | `"strong"` | Steering strength for activity-driven evolution (`subtle`, `balanced`, `strong`). |
+| `agenticSuno.lyriaSkipVariation` | `0.85` | Variation amount for skip-triggered fresh sections (`0.0` to `1.0`). |
 | `agenticSuno.apiKey` | `""` | Suno API key (fallback path). |
 | `agenticSuno.useMock` | `false` | Mock fallback data for Suno path. |
 | `agenticSuno.autoPlayOnActivity` | `true` | Auto-start on activity. |
+
+Example overrides in `.vscode/settings.json`:
+
+```json
+{
+  "agenticSuno.lyriaStyleAnchor": "cinematic electro-pop pulse, expressive hooks, warm bass motion, polished transitions",
+  "agenticSuno.lyriaEvolutionStrength": "balanced",
+  "agenticSuno.lyriaSkipVariation": 0.9
+}
+```
 
 ## Security Model
 

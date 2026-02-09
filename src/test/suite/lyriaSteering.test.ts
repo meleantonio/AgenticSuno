@@ -10,6 +10,26 @@ suite('Lyria Steering Suite', () => {
         assert.ok((high.guidance || 0) > (low.guidance || 0));
     });
 
+    test('strong evolution reacts more to mood delta than subtle evolution', () => {
+        const subtle = buildGenerationConfig({
+            mood: 'focused',
+            intensity: 60,
+            moodDelta: 0.9,
+            activityDensity: 0.8,
+            evolutionStrength: 'subtle',
+        });
+        const strong = buildGenerationConfig({
+            mood: 'focused',
+            intensity: 60,
+            moodDelta: 0.9,
+            activityDensity: 0.8,
+            evolutionStrength: 'strong',
+        });
+
+        assert.ok((strong.temperature || 0) > (subtle.temperature || 0));
+        assert.ok((strong.bpm || 0) >= (subtle.bpm || 0));
+    });
+
     test('weighted prompts include project theme and hint', () => {
         const prompts = buildWeightedPrompts({
             mood: 'ambient',
@@ -35,5 +55,17 @@ suite('Lyria Steering Suite', () => {
 
         assert.ok(prompts.length >= 2);
         assert.ok(prompts.every((p) => p.text.includes(customAnchor)));
+    });
+
+    test('skip variation token adds a distinct variation prompt', () => {
+        const prompts = buildWeightedPrompts({
+            mood: 'triumphant',
+            intensity: 72,
+            promptVariation: 'skip-12-z9',
+            skipVariation: 0.95,
+            evolutionStrength: 'strong',
+        });
+
+        assert.ok(prompts.some((p) => p.text.includes('variation cue skip-12-z9')));
     });
 });

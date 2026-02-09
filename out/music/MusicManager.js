@@ -74,6 +74,17 @@ class MusicManager {
     projectTheme = null;
     // Realtime session flags
     realtimeActive = false;
+    playbackOrigin = 'idle';
+    activeAgentCount = 0;
+    lastActivityHint = '';
+    activitySignals = [];
+    aggregatedIntensity = 30;
+    aggregatedMood = 'ambient';
+    skipCounter = 0;
+    SIGNAL_WINDOW_MS = 60000;
+    SIGNAL_HALF_LIFE_MS = 18000;
+    MAX_SIGNAL_WINDOW = 80;
+    EWMA_ALPHA = 0.32;
     constructor(playerProvider, workspaceState) {
         this.playerProvider = playerProvider;
         this.workspaceState = workspaceState;
@@ -113,10 +124,11 @@ class MusicManager {
             }
         });
         console.log('MusicManager: Initialized with Suno fallback + Lyria realtime support');
+        this.logRouting('startup');
         this.initializeCache();
     }
     initializeCache() {
-        if (this.selectPreferredEngine() !== 'suno') {
+        if (!this.isSunoGenerationAllowed()) {
             console.log('MusicManager: Skipping fallback cache warmup because Lyria is preferred.');
             return;
         }
@@ -127,6 +139,9 @@ class MusicManager {
         }, 3000);
     }
     async generateInBackground(mood) {
+        if (!this.isSunoGenerationAllowed() || this.playbackOrigin === 'lyria_realtime' || this.playbackOrigin === 'library_url') {
+            return;
+        }
         if (this.pendingGenerations.has(mood))
             return;
         const cached = this.moodCache.get(mood) || [];
@@ -152,35 +167,44 @@ class MusicManager {
         this.pendingGenerations.set(mood, generationPromise);
         await generationPromise;
     }
-    handleActivity(activity) {
+    handleActivity(activity, agentCount) {
         const classification = activity.rawText.length > 20
             ? this.classifier.classify(activity.rawText)
             : activity.classification;
-        const prevMood = this.currentMood;
-        const prevIntensity = this.currentIntensity;
-        this.currentMood = classification.mood;
-        this.currentIntensity = classification.intensity;
+        const prevMood = this.aggregatedMood;
+        const prevIntensity = this.aggregatedIntensity;
+        if (typeof agentCount === 'number') {
+            this.activeAgentCount = Math.max(0, Math.floor(agentCount));
+        }
+        this.lastActivityHint = activity.rawText;
+        this.pushActivitySignal(activity, classification.mood, classification.intensity);
+        const aggregated = this.aggregateSignal();
+        this.aggregatedMood = aggregated.mood;
+        this.aggregatedIntensity = aggregated.intensity;
+        this.currentMood = aggregated.mood;
+        this.currentIntensity = aggregated.intensity;
         this.playerProvider.updateState({
             mood: this.currentMood,
             intensity: this.currentIntensity,
+            agentCount: this.activeAgentCount,
         });
         this.playerProvider.addActivity({
             ...activity,
             classification,
         });
-        const moodOrIntensityChanged = prevMood !== this.currentMood || Math.abs(prevIntensity - this.currentIntensity) > 15;
+        const moodOrIntensityChanged = prevMood !== this.currentMood || Math.abs(prevIntensity - this.currentIntensity) > 7;
         const now = Date.now();
         if (this.isPlaying && moodOrIntensityChanged) {
             if (this.realtimeActive) {
                 const debounceOk = now - this.lastSteerOrExtendTime >= this.STEER_DEBOUNCE_MS;
                 if (debounceOk) {
                     this.lastSteerOrExtendTime = now;
-                    void this.steerRealtimeSession(activity.rawText);
+                    void this.steerRealtimeSession(aggregated.hint, aggregated);
                 }
             }
             else {
                 const debounceOk = now - this.lastSteerOrExtendTime >= this.EXTEND_ON_ACTIVITY_DEBOUNCE_MS;
-                if (debounceOk) {
+                if (debounceOk && this.playbackOrigin !== 'library_url' && this.isSunoGenerationAllowed()) {
                     this.lastSteerOrExtendTime = now;
                     void this.extendFlow();
                 }
@@ -211,32 +235,22 @@ class MusicManager {
         if (newState.status === 'idle' && !this.isPlaying) {
             return;
         }
-        if (newState.status === 'working' && !this.isPlaying) {
-            await this.startFlow();
-        }
+        // Legacy state updates are advisory only; start behavior is driven by activity handlers/commands.
     }
     shouldUpdateMusic(newState) {
         return newState.status !== this.state.status || newState.intensity !== this.state.intensity;
     }
-    async startFlowFromActivity(activity) {
+    async startFlowFromActivity(activity, agentCount) {
         if (this.isPlaying)
             return;
-        const classification = activity.rawText.length > 10
-            ? this.classifier.classify(activity.rawText)
-            : activity.classification;
-        this.currentMood = classification.mood;
-        this.currentIntensity = classification.intensity;
-        this.playerProvider.updateState({
-            mood: this.currentMood,
-            intensity: this.currentIntensity,
-        });
-        this.playerProvider.addActivity({ ...activity, classification });
+        this.handleActivity(activity, agentCount);
         await this.startFlow(activity.rawText);
     }
     async startFlow(customPromptHint) {
         if (this.isPlaying)
             return;
         const mode = this.selectPreferredEngine();
+        this.logRouting(`startFlow:${customPromptHint ? 'activity' : 'manual'}`);
         if (mode === 'lyria') {
             const started = await this.startRealtimeFlow(customPromptHint);
             if (started) {
@@ -264,23 +278,36 @@ class MusicManager {
             this.realtimeActive = false;
             this.currentMood = theme?.track?.mood ?? 'ambient';
             this.currentIntensity = 30;
-            this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
+            this.setPlaybackOrigin('library_url', 'startFlowWithImmediate:theme-url');
+            this.playerProvider.updateState({
+                mood: this.currentMood,
+                intensity: this.currentIntensity,
+                agentCount: this.activeAgentCount,
+            });
             this.playerProvider.playTrackWhenReady(theme.track?.audio_url ?? '', theme.track?.title ?? 'Project theme', theme?.style ?? theme?.prompt.substring(0, 50), theme?.track?.mood);
-            this.startBackgroundGeneration();
             return;
         }
         this.currentMood = 'focused';
         this.currentIntensity = 30;
-        this.playerProvider.updateState({ mood: this.currentMood, intensity: this.currentIntensity });
+        this.playerProvider.updateState({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+            agentCount: this.activeAgentCount,
+        });
         const mockTrack = this.generationEngine.getMockTrackForMood(this.currentMood);
         this.isPlaying = true;
         this.isPaused = false;
         this.realtimeActive = false;
+        this.setPlaybackOrigin('suno_generated', 'startFlowWithImmediate:mock');
         this.playerProvider.playTrackWhenReady(mockTrack.audio_url, mockTrack.title ?? `Mock (${this.currentMood})`, String(mockTrack.metadata?.tags ?? this.currentMood), this.currentMood);
         this.startBackgroundGeneration();
         void this.getRepositoryMood().then((repoMood) => {
             this.currentMood = repoMood;
-            this.playerProvider.updateState({ mood: this.currentMood });
+            this.playerProvider.updateState({
+                mood: this.currentMood,
+                intensity: this.currentIntensity,
+                agentCount: this.activeAgentCount,
+            });
         });
     }
     async startRealtimeFlow(customPromptHint, preset) {
@@ -306,6 +333,7 @@ class MusicManager {
             this.isPlaying = true;
             this.isPaused = false;
             this.realtimeActive = true;
+            this.setPlaybackOrigin('lyria_realtime', 'startRealtimeFlow');
             this.upsertRealtimeProjectTheme(steering.prompt, steering.prompts, steering.config);
             this.addRealtimePresetToLibrary(steering.prompt, steering.prompts, steering.config);
             return true;
@@ -318,14 +346,17 @@ class MusicManager {
             this.realtimeActive = false;
             this.isPlaying = false;
             this.isPaused = false;
+            this.setPlaybackOrigin('idle', 'startRealtimeFlow:failed');
             return false;
         }
     }
-    async steerRealtimeSession(customPromptHint) {
+    async steerRealtimeSession(customPromptHint, aggregated) {
         if (!this.realtimeActive || !this.isPlaying)
             return;
         try {
-            const steering = await this.buildRealtimeSteering(customPromptHint);
+            const steering = await this.buildRealtimeSteering(customPromptHint, undefined, {
+                aggregated,
+            });
             await this.lyriaEngine.steer(steering.prompts, steering.config);
             this.upsertRealtimeProjectTheme(steering.prompt, steering.prompts, steering.config);
         }
@@ -335,28 +366,46 @@ class MusicManager {
             this.playerProvider.streamError(`Lyria steer failed: ${message}`);
         }
     }
-    async buildRealtimeSteering(customPromptHint, preset) {
+    async buildRealtimeSteering(customPromptHint, preset, options) {
+        const aggregated = options?.aggregated ?? this.aggregateSignal();
+        const evolutionStrength = this.getLyriaEvolutionStrength();
+        const skipVariation = options?.skipVariation ?? this.getLyriaSkipVariation();
         const projectThemePrompt = this.projectTheme?.prompt ?? await this.deriveProjectThemePrompt() ?? undefined;
-        const prompt = this.blendContentHint(this.getPromptForMood(this.currentMood, this.currentIntensity), customPromptHint);
+        const prompt = this.blendContentHint(this.getPromptForMood(aggregated.mood, aggregated.intensity), customPromptHint);
         const prompts = preset?.prompts ?? (0, LyriaSteering_1.buildWeightedPrompts)({
-            mood: this.currentMood,
-            intensity: this.currentIntensity,
+            mood: aggregated.mood,
+            intensity: aggregated.intensity,
             promptHint: customPromptHint,
             projectThemePrompt,
             styleAnchor: this.getLyriaStyleAnchor(),
+            evolutionStrength,
+            activityDensity: aggregated.activityDensity,
+            moodDelta: aggregated.moodDelta,
+            promptVariation: options?.variationTag,
+            skipVariation,
         });
         const config = preset?.config ?? this.projectTheme?.generationConfig ?? (0, LyriaSteering_1.buildGenerationConfig)({
-            mood: this.currentMood,
-            intensity: this.currentIntensity,
+            mood: aggregated.mood,
+            intensity: aggregated.intensity,
+            evolutionStrength,
+            activityDensity: aggregated.activityDensity,
+            moodDelta: aggregated.moodDelta,
+            skipVariation,
+            seed: options?.forceNewSeed ? this.generateFreshSeed() : undefined,
         });
         return { prompt, prompts, config };
     }
     async startSunoFlow(customPromptHint) {
         if (this.isPlaying)
             return;
+        if (!this.isSunoGenerationAllowed()) {
+            console.log('MusicManager: Suno generation blocked because Lyria is available and preferred.');
+            return;
+        }
         this.isPlaying = true;
         this.isPaused = false;
         this.realtimeActive = false;
+        this.setPlaybackOrigin('suno_generated', 'startSunoFlow');
         try {
             const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
             let cachedTracks = this.moodCache.get(this.currentMood);
@@ -404,9 +453,13 @@ class MusicManager {
             vscode.window.showErrorMessage('AgenticSuno: Failed to generate fallback music.');
             this.isPlaying = false;
             this.isPaused = false;
+            this.setPlaybackOrigin('idle', 'startSunoFlow:error');
         }
     }
     startBackgroundGeneration() {
+        if (!this.isSunoGenerationAllowed() || this.realtimeActive || this.playbackOrigin === 'library_url') {
+            return;
+        }
         this.startGenerationTimer();
         const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
         this.generationEngine.generate(prompt).then((result) => {
@@ -431,6 +484,7 @@ class MusicManager {
             vscode.window.showErrorMessage('AgenticSuno: Failed to generate music.');
             this.isPlaying = false;
             this.isPaused = false;
+            this.setPlaybackOrigin('idle', 'startBackgroundGeneration:error');
             this.playerProvider.stop();
         });
     }
@@ -443,8 +497,8 @@ class MusicManager {
         if (this.realtimeActive) {
             this.realtimeActive = false;
             void this.lyriaEngine.stop();
-            this.playerProvider.streamStop();
         }
+        this.setPlaybackOrigin('idle', 'stop');
         this.playerProvider.stop();
     }
     pause() {
@@ -453,7 +507,6 @@ class MusicManager {
         this.isPaused = true;
         if (this.realtimeActive) {
             void this.lyriaEngine.pause();
-            this.playerProvider.streamPause();
         }
         else {
             this.playerProvider.pause();
@@ -465,7 +518,6 @@ class MusicManager {
         this.isPaused = false;
         if (this.realtimeActive) {
             void this.lyriaEngine.resume();
-            this.playerProvider.streamResume();
         }
         else {
             this.playerProvider.resume();
@@ -475,8 +527,20 @@ class MusicManager {
         if (!this.isPlaying)
             return;
         if (this.realtimeActive) {
-            const steering = await this.buildRealtimeSteering();
+            const variationTag = `skip-${++this.skipCounter}-${Date.now().toString(36)}`;
+            const steering = await this.buildRealtimeSteering(this.lastActivityHint, undefined, {
+                aggregated: this.aggregateSignal(),
+                variationTag,
+                forceNewSeed: true,
+                skipVariation: this.getLyriaSkipVariation(),
+            });
             await this.lyriaEngine.skip(steering.prompts, steering.config);
+            return;
+        }
+        if (this.playbackOrigin === 'library_url') {
+            const latestHint = this.lastActivityHint;
+            this.stop();
+            await this.startFlow(latestHint);
             return;
         }
         if (this.queue.length > 0) {
@@ -495,6 +559,7 @@ class MusicManager {
             return;
         this.currentTrack = this.queue.shift();
         if (this.currentTrack) {
+            this.setPlaybackOrigin('suno_generated', 'playNext');
             this.playerProvider.playTrack(this.currentTrack.audio_url, this.currentTrack.title || 'Generated Track', this.currentTrack.metadata?.tags || this.getPromptForMood(this.currentMood, this.currentIntensity), this.currentMood);
         }
         if (this.queue.length < 2) {
@@ -502,6 +567,9 @@ class MusicManager {
         }
     }
     startExtensionScheduler() {
+        if (!this.isSunoGenerationAllowed() || this.playbackOrigin === 'library_url') {
+            return;
+        }
         this.stopExtensionScheduler();
         this.extensionTimer = setInterval(() => {
             if (this.realtimeActive)
@@ -520,7 +588,7 @@ class MusicManager {
         }
     }
     async extendFlow() {
-        if (this.realtimeActive || !this.currentTrack)
+        if (this.realtimeActive || !this.currentTrack || !this.isSunoGenerationAllowed() || this.playbackOrigin === 'library_url')
             return;
         try {
             const prompt = this.getPromptForMood(this.currentMood, this.currentIntensity);
@@ -581,11 +649,11 @@ class MusicManager {
     getPromptForMood(mood, intensity) {
         const config = vscode.workspace.getConfiguration('agenticSuno');
         const moodPrompts = {
-            epic: 'epic orchestral, cinematic, powerful, heroic, dramatic',
-            tense: 'dark ambient, tension, suspense, ominous, brooding',
-            triumphant: 'uplifting, victorious, celebratory, major key, triumphant',
-            focused: config.get('styles.working') || 'lo-fi beats, focus, concentration, chill',
-            ambient: 'ambient, calm, minimal, atmospheric, peaceful',
+            epic: 'cinematic electronic drive, bold momentum, expressive peaks, anthemic energy',
+            tense: 'nocturnal pulse, unresolved harmony, controlled pressure, dramatic suspense',
+            triumphant: 'uplifting melodic contour, bright confidence, celebratory forward motion',
+            focused: config.get('styles.working') || 'deep groove, focused momentum, clean modern textures',
+            ambient: 'atmospheric layers, warm harmonics, spacious flow, gentle movement',
         };
         let prompt = moodPrompts[mood];
         if (intensity > 70) {
@@ -597,7 +665,6 @@ class MusicManager {
         else if (intensity < 30) {
             prompt += ', slow tempo, gentle, soft';
         }
-        prompt += ', instrumental';
         return prompt;
     }
     getCurrentMood() {
@@ -605,6 +672,14 @@ class MusicManager {
     }
     isCurrentlyPlaying() {
         return this.isPlaying;
+    }
+    setAgentCount(agentCount) {
+        this.activeAgentCount = Math.max(0, Math.floor(agentCount));
+        this.playerProvider.updateState({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+            agentCount: this.activeAgentCount,
+        });
     }
     // ---------- Persisted library & project theme ----------
     loadPersistedLibrary() {
@@ -615,6 +690,11 @@ class MusicManager {
             this.projectTheme = rawTheme && typeof rawTheme.prompt === 'string' ? rawTheme : null;
             this.playerProvider.setLibrary(this.library);
             this.playerProvider.setProjectThemeAvailable(!!this.projectTheme);
+            this.playerProvider.updateState({
+                mood: this.currentMood,
+                intensity: this.currentIntensity,
+                agentCount: this.activeAgentCount,
+            });
         }
         catch (error) {
             console.error('MusicManager: loadPersistedLibrary error', error);
@@ -720,7 +800,7 @@ class MusicManager {
             return null;
         const parts = [];
         if (folder.name) {
-            parts.push(`Instrumental theme for project ${folder.name}`);
+            parts.push(`Adaptive music theme for project ${folder.name}`);
         }
         try {
             const readmeUri = vscode.Uri.joinPath(folder.uri, 'README.md');
@@ -785,7 +865,7 @@ class MusicManager {
         const combined = await this.getRepositoryText();
         if (!combined)
             return null;
-        return `${combined}, instrumental`;
+        return `${combined}, expressive modern composition`;
     }
     async getRepositoryMood() {
         const text = await this.getRepositoryText();
@@ -795,6 +875,9 @@ class MusicManager {
         return classification.mood;
     }
     async ensureProjectTheme() {
+        if (this.playbackOrigin === 'lyria_realtime' || this.playbackOrigin === 'library_url') {
+            return;
+        }
         if (this.projectTheme?.prompt) {
             this.playerProvider.setProjectThemeAvailable(true);
             return;
@@ -810,7 +893,7 @@ class MusicManager {
         };
         await this.workspaceState.update(WORKSPACE_STATE_KEY_PROJECT_THEME, this.projectTheme);
         this.playerProvider.setProjectThemeAvailable(true);
-        if (this.projectTheme.engine === 'suno') {
+        if (this.projectTheme.engine === 'suno' && this.isSunoGenerationAllowed()) {
             try {
                 const result = await this.generationEngine.generate(prompt, true, true);
                 if (result.tracks && result.tracks.length > 0) {
@@ -844,7 +927,12 @@ class MusicManager {
             this.realtimeActive = false;
             this.isPaused = false;
             this.currentMood = theme.track.mood ?? 'ambient';
-            this.playerProvider.updateState({ mood: this.currentMood });
+            this.setPlaybackOrigin('library_url', 'playProjectTheme:url');
+            this.playerProvider.updateState({
+                mood: this.currentMood,
+                intensity: this.currentIntensity,
+                agentCount: this.activeAgentCount,
+            });
             this.playerProvider.playTrack(theme.track.audio_url, theme.track.title ?? 'Project theme', theme.style ?? theme.prompt.substring(0, 50), theme.track.mood);
             return;
         }
@@ -854,12 +942,21 @@ class MusicManager {
         const track = this.library[index];
         if (!track)
             return;
+        this.playLibraryTrackById(track.id);
+    }
+    playLibraryTrackById(trackId) {
+        const track = this.library.find((entry) => entry.id === trackId);
+        if (!track)
+            return;
+        this.logRouting(`playLibraryTrackById:${track.engine ?? 'unknown'}`);
         if (this.isPlaying) {
             this.stop();
         }
         if (track.engine === 'lyria' || !track.audio_url) {
             this.currentMood = track.mood ?? this.currentMood;
-            this.currentIntensity = 40;
+            this.currentIntensity = Math.max(this.currentIntensity, 40);
+            this.aggregatedMood = this.currentMood;
+            this.aggregatedIntensity = this.currentIntensity;
             void this.startRealtimeFlow(track.prompt, {
                 prompts: track.weightedPrompts,
                 config: track.generationConfig,
@@ -876,10 +973,16 @@ class MusicManager {
             title: track.title,
             status: 'complete',
         };
-        this.playerProvider.updateState({ mood: this.currentMood });
+        this.setPlaybackOrigin('library_url', 'playLibraryTrackById:url');
+        this.stopExtensionScheduler();
+        this.playerProvider.updateState({
+            mood: this.currentMood,
+            intensity: this.currentIntensity,
+            agentCount: this.activeAgentCount,
+        });
         this.playerProvider.playTrack(track.audio_url, track.title ?? 'Library track', track.style ?? track.prompt?.substring(0, 50) ?? '', track.mood);
     }
-    selectPreferredEngine() {
+    selectPreferredEngine(notifyMissingKey = true) {
         const config = vscode.workspace.getConfiguration('agenticSuno');
         const preference = config.get('engine') ?? 'auto';
         if (preference === 'suno') {
@@ -888,12 +991,21 @@ class MusicManager {
         const hasGeminiKey = this.getGeminiApiKey().length > 0;
         if (preference === 'lyria') {
             if (!hasGeminiKey) {
-                vscode.window.setStatusBarMessage('AgenticSuno: geminiApiKey missing, falling back to Suno/mock.', 3000);
+                if (notifyMissingKey) {
+                    vscode.window.setStatusBarMessage('AgenticSuno: geminiApiKey missing, falling back to Suno/mock.', 3000);
+                }
                 return 'suno';
             }
             return 'lyria';
         }
         return hasGeminiKey ? 'lyria' : 'suno';
+    }
+    isSunoGenerationAllowed() {
+        const preferred = this.selectPreferredEngine(false);
+        if (preferred === 'suno') {
+            return true;
+        }
+        return this.getGeminiApiKey().length === 0;
     }
     getGeminiApiKey() {
         const config = vscode.workspace.getConfiguration('agenticSuno');
@@ -906,6 +1018,90 @@ class MusicManager {
     getLyriaStyleAnchor() {
         const config = vscode.workspace.getConfiguration('agenticSuno');
         return (config.get('lyriaStyleAnchor') || '').trim();
+    }
+    getLyriaEvolutionStrength() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        const raw = config.get('lyriaEvolutionStrength');
+        if (raw === 'subtle' || raw === 'balanced' || raw === 'strong') {
+            return raw;
+        }
+        return 'strong';
+    }
+    getLyriaSkipVariation() {
+        const config = vscode.workspace.getConfiguration('agenticSuno');
+        const value = Number(config.get('lyriaSkipVariation'));
+        if (Number.isFinite(value)) {
+            return Math.max(0, Math.min(1, value));
+        }
+        return 0.85;
+    }
+    generateFreshSeed() {
+        return Math.floor(Math.random() * 2_000_000_000);
+    }
+    logRouting(reason) {
+        const preferredEngine = this.selectPreferredEngine(false);
+        console.log(`MusicManager: routing reason=${reason} origin=${this.playbackOrigin} preferred=${preferredEngine} sunoGenerationAllowed=${this.isSunoGenerationAllowed()}`);
+    }
+    setPlaybackOrigin(origin, reason) {
+        this.playbackOrigin = origin;
+        this.logRouting(reason);
+    }
+    pushActivitySignal(activity, mood, intensity) {
+        const hint = activity.rawText.replace(/\s+/g, ' ').trim().substring(0, 160);
+        this.activitySignals.push({
+            timestamp: activity.timestamp || Date.now(),
+            mood,
+            intensity: Math.max(0, Math.min(100, intensity)),
+            hint,
+        });
+        if (this.activitySignals.length > this.MAX_SIGNAL_WINDOW) {
+            this.activitySignals = this.activitySignals.slice(this.activitySignals.length - this.MAX_SIGNAL_WINDOW);
+        }
+    }
+    aggregateSignal() {
+        const now = Date.now();
+        const cutoff = now - this.SIGNAL_WINDOW_MS;
+        this.activitySignals = this.activitySignals.filter((signal) => signal.timestamp >= cutoff);
+        if (this.activitySignals.length === 0) {
+            return {
+                mood: this.currentMood,
+                intensity: this.currentIntensity,
+                hint: this.lastActivityHint || undefined,
+                activityDensity: 0,
+                moodDelta: 0,
+            };
+        }
+        const moodWeights = new Map();
+        let ewmaIntensity = this.aggregatedIntensity;
+        let weightedDensity = 0;
+        for (const signal of this.activitySignals) {
+            const age = Math.max(0, now - signal.timestamp);
+            const recencyWeight = Math.exp(-age / this.SIGNAL_HALF_LIFE_MS);
+            moodWeights.set(signal.mood, (moodWeights.get(signal.mood) || 0) + recencyWeight);
+            ewmaIntensity = ewmaIntensity * (1 - this.EWMA_ALPHA) + signal.intensity * this.EWMA_ALPHA;
+            weightedDensity += recencyWeight;
+        }
+        let dominantMood = this.aggregatedMood;
+        let maxWeight = -1;
+        for (const [mood, weight] of moodWeights.entries()) {
+            if (weight > maxWeight) {
+                dominantMood = mood;
+                maxWeight = weight;
+            }
+        }
+        const intensity = Math.round(Math.max(0, Math.min(100, ewmaIntensity)));
+        const activityDensity = Math.max(0, Math.min(1, weightedDensity / 6));
+        const moodChanged = dominantMood !== this.aggregatedMood ? 0.55 : 0.12;
+        const intensityDelta = Math.abs(intensity - this.aggregatedIntensity) / 100;
+        const moodDelta = Math.max(0, Math.min(1, moodChanged + intensityDelta * 0.55 + activityDensity * 0.35));
+        const hint = this.activitySignals[this.activitySignals.length - 1]?.hint || this.lastActivityHint;
+        return {
+            mood: dominantMood,
+            intensity,
+            hint: hint || undefined,
+            activityDensity,
+            moodDelta,
+        };
     }
     dispose() {
         this.stop();

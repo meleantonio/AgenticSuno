@@ -146,6 +146,8 @@ export interface ExtensionConfig {
     geminiApiKey: string;
     lyriaModel: string;
     lyriaStyleAnchor: string;
+    lyriaEvolutionStrength: 'subtle' | 'balanced' | 'strong';
+    lyriaSkipVariation: number;
     engine: 'auto' | MusicEngineMode;
     autoPlayOnActivity: boolean;
     monitoredChannels: string[];  // Regex patterns
