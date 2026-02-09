@@ -210,8 +210,8 @@ if [[ "${RUN_PACKAGE_CHECK}" -eq 1 ]]; then
     if [[ "${QUIET}" -eq 0 ]]; then
         say "Running package validation with @vscode/vsce..."
     fi
-    tmp_vsix="$(mktemp /tmp/agentic-suno-package-check-XXXXXX.vsix)"
-    tmp_log="$(mktemp /tmp/agentic-suno-package-check-log-XXXXXX.txt)"
+    tmp_vsix="$(mktemp /tmp/agentic-suno-package-check-XXXXXX).vsix"
+    tmp_log="$(mktemp /tmp/agentic-suno-package-check-log-XXXXXX).txt"
 
     if "${VSCE_CMD[@]}" package --out "${tmp_vsix}" >"${tmp_log}" 2>&1; then
         ok "VSIX package build succeeded."
