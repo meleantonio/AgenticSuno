@@ -1,4 +1,5 @@
 import WebSocket = require('ws');
+import { randomUUID } from 'crypto';
 import {
     LyriaAudioChunk,
     LyriaConnectionOptions,
@@ -336,7 +337,7 @@ export class LyriaClient {
 
     private async openConnection(): Promise<LyriaSessionInfo> {
         return new Promise<LyriaSessionInfo>((resolve, reject) => {
-            const sessionId = `lyria-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+            const sessionId = `lyria-${randomUUID()}`;
             this.sequence = 0;
 
             const socket = new WebSocket(`${WS_ENDPOINT}?key=${encodeURIComponent(this.options.apiKey)}`);

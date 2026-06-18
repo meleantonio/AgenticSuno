@@ -6166,6 +6166,7 @@ exports.LyriaClient = void 0;
 exports.parseLyriaServerMessage = parseLyriaServerMessage;
 exports.parseAudioFormatFromMime = parseAudioFormatFromMime;
 const WebSocket = __webpack_require__(/*! ws */ "ws");
+const crypto_1 = __webpack_require__(/*! crypto */ "crypto");
 const DEFAULT_SAMPLE_RATE = 48000;
 const DEFAULT_CHANNELS = 2;
 const WS_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateMusic';
@@ -6429,7 +6430,7 @@ class LyriaClient {
     }
     async openConnection() {
         return new Promise((resolve, reject) => {
-            const sessionId = `lyria-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+            const sessionId = `lyria-${(0, crypto_1.randomUUID)()}`;
             this.sequence = 0;
             const socket = new WebSocket(`${WS_ENDPOINT}?key=${encodeURIComponent(this.options.apiKey)}`);
             this.ws = socket;
