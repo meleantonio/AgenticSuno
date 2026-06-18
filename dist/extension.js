@@ -6513,7 +6513,7 @@ class LyriaClient {
     }
     async openConnection() {
         return new Promise((resolve, reject) => {
-            const sessionId = `lyria-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+            const sessionId = `lyria-${(0,crypto__WEBPACK_IMPORTED_MODULE_1__.randomUUID)()}`;
             this.sequence = 0;
             const socket = new WebSocket(`${WS_ENDPOINT}?key=${encodeURIComponent(this.options.apiKey)}`);
             this.ws = socket;
