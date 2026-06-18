@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { Mood, MusicStatus, AgentActivity, PersistedTrack } from '../types';
 import { LyriaAudioChunk } from '../lyria/types';
@@ -339,10 +340,5 @@ export class PlayerViewProvider implements vscode.WebviewViewProvider {
 }
 
 function getNonce(): string {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-        text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+    return crypto.randomBytes(24).toString('base64url');
 }
